@@ -341,6 +341,21 @@ final class AppDatabase {
         return Array(merged.prefix(limit))
     }
 
+    /// 各项目行动链已完成的步数(像素进度条数据源)
+    func doneStepCounts() -> [Int64: Int] {
+        let rows = (try? dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT l.projectId AS pid, COUNT(*) AS n FROM item
+                JOIN itemProjectLink l ON l.itemId = item.id
+                WHERE item.status = 'done' AND item.seq IS NOT NULL
+                GROUP BY l.projectId
+                """)
+        }) ?? []
+        var map: [Int64: Int] = [:]
+        for r in rows { map[r["pid"]] = r["n"] }
+        return map
+    }
+
     /// 完成某步后,返回同项目链条上被解锁的下一步(用于「已解锁」toast)
     func unlockedStep(afterDone item: Item) -> Item? {
         guard let id = item.id, let seq = item.seq,

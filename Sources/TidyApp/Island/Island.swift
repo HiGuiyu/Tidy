@@ -148,6 +148,26 @@ struct CreatureGlyph: View {
     }
 }
 
+/// 像素电量条:竖排格,自下而上点亮 = 行动链完成进度
+struct PixelBar: View {
+    var filled: Int
+    var total: Int
+    var color: Color
+
+    var body: some View {
+        let segs = min(max(total, 1), 6)
+        let lit = total > 0 ? Int((Double(filled) / Double(total) * Double(segs)).rounded()) : 0
+        VStack(spacing: 1.5) {
+            ForEach((0..<segs).reversed(), id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(i < lit ? color : Color.white.opacity(0.14))
+                    .frame(width: 5, height: 3)
+            }
+        }
+        .help("已完成 \(filled)/\(total) 步")
+    }
+}
+
 /// 项目名 → 稳定的像素色(同项目每次同色)
 func projectHue(_ name: String) -> Color {
     var h: UInt32 = 5381
@@ -242,9 +262,9 @@ final class IslandController {
     static var collapsedWidth: CGFloat {
         notchWidth > 0 ? notchWidth + wingWidth * 2 : 160
     }
-    /// 展开态:静默宽度的 2 倍
+    /// 展开态:静默宽度的 ~2.3 倍(舒展一些,信息密度优先)
     static var expandedWidth: CGFloat {
-        min(collapsedWidth * 2.0, (screen?.frame.width ?? 1440) - 240)
+        min(collapsedWidth * 2.3, (screen?.frame.width ?? 1440) - 200)
     }
 
     // MARK: 生命周期
@@ -254,7 +274,7 @@ final class IslandController {
         model.refreshCounts()
         // 固定画布:宽 = 最大展开宽 + 边距,高 = 最大展开高;此后窗口永不移动/缩放
         if let panel, let screen = Self.screen {
-            let size = NSSize(width: Self.expandedWidth + 32, height: 360)
+            let size = NSSize(width: Self.expandedWidth + 32, height: 400)
             let f = screen.frame
             panel.setFrame(NSRect(x: f.midX - size.width / 2, y: f.maxY - size.height,
                                   width: size.width, height: size.height), display: true)
@@ -482,6 +502,11 @@ final class IslandMenuBridge: NSObject {
         let styleItem = NSMenuItem(title: "质感", action: nil, keyEquivalent: "")
         m.addItem(styleItem)
         m.setSubmenu(styleMenu, for: styleItem)
+        let stretch = NSMenuItem(title: "久坐提醒(每 50 分钟)",
+                                 action: #selector(toggleStretch), keyEquivalent: "")
+        stretch.target = self
+        stretch.state = ReviewScheduler.shared.stretchOn ? .on : .off
+        m.addItem(stretch)
         add("AI 设置(.env)…", #selector(openEnv))
         add("编辑 MEMORY.md", #selector(openMemory))
         add("自检…", #selector(selfCheck))
@@ -505,6 +530,9 @@ final class IslandMenuBridge: NSObject {
     @objc private func selfCheck() { AppActions.selfCheck() }
     @objc private func hideIsland() { IslandController.shared.hideTemporarily() }
     @objc private func quit() { AppActions.quit() }
+    @objc private func toggleStretch() {
+        ReviewScheduler.shared.stretchOn.toggle()
+    }
     @objc private func setStyle(_ sender: NSMenuItem) {
         IslandController.shared.model.style = sender.tag
         UserDefaults.standard.set(sender.tag, forKey: "islandStyle")
@@ -964,19 +992,29 @@ struct IslandView: View {
                 PixelGlyph(pattern: Pixel.star, color: Color(red: 1.0, green: 0.58, blue: 0.2), pixel: 1.9)
             }
             Group {
+                // 多状态并列:两分钟 + 聚焦可同时显示,再接常规计数
                 if let t = model.twoMinText {
                     statNum(t, Theme.warning)
                     statLabel("马上做")
-                } else if let f = model.focusText {
+                }
+                if let f = model.focusText {
+                    if model.twoMinText != nil { statDivider }
                     statNum(shortCountdown(f), Theme.success)
-                    statLabel("聚焦中")
+                    statLabel("聚焦")
+                }
+                if model.isWorking {
+                    if model.actionCount > 0 {
+                        statDivider
+                        statNum("\(model.actionCount)", Color(red: 0.42, green: 0.62, blue: 1.0))
+                        statLabel("待办")
+                    }
                 } else {
                     if model.actionCount > 0 {
                         statNum("\(model.actionCount)", Color(red: 0.42, green: 0.62, blue: 1.0))
                         statLabel("待办")
                     }
                     if model.inboxCount > 0 {
-                        statDivider
+                        if model.actionCount > 0 { statDivider }
                         statNum("\(model.inboxCount)", Theme.warning)
                         statLabel("收件箱")
                     }
@@ -1078,6 +1116,8 @@ struct IslandView: View {
         var secondary: String
         var remindAt: Date?
         var lockedCount: Int
+        var doneSteps = 0
+        var totalAll = 0       // 链条全长(含已完成),电量条用
         var overdue: Bool { remindAt.map { $0 < Date() } ?? false }
     }
 
@@ -1092,7 +1132,9 @@ struct IslandView: View {
                                 text: first.nextAction ?? first.title,
                                 secondary: sec,
                                 remindAt: first.remindAt,
-                                lockedCount: locked))
+                                lockedCount: locked,
+                                doneSteps: chain.doneSteps,
+                                totalAll: chain.doneSteps + chain.totalSteps))
         }
         for it in data.loose {
             let sec = (it.expectedOutcome?.isEmpty == false ? "→ \(it.expectedOutcome!)" : "独立行动 · 完成即清")
@@ -1112,7 +1154,7 @@ struct IslandView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 Text(row.project.map { "\($0) · \(row.text)" } ?? row.text)
-                    .font(.system(size: 12.5, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white.opacity(0.95))
                     .lineLimit(1)
                 Spacer(minLength: 8)
@@ -1126,16 +1168,24 @@ struct IslandView: View {
                     metaChip(proj, projectHue(proj))
                 }
             }
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 CreatureGlyph(color: row.project.map(projectHue) ?? Color(red: 0.42, green: 0.62, blue: 1.0))
+                if row.totalAll > 1 {
+                    // 像素电量条:链条进度(已完成/全长)
+                    PixelBar(filled: row.doneSteps, total: row.totalAll,
+                             color: row.project.map(projectHue) ?? Theme.success)
+                    Text("\(row.doneSteps)/\(row.totalAll)")
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
                 Text(row.secondary)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.48))
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
     }
 
     /// 彩色小方标签(参考图右侧的 tag chips)
@@ -1225,6 +1275,7 @@ struct TodoPreviewData {
         let steps: [Item]
         let hasSequence: Bool
         let totalSteps: Int
+        let doneSteps: Int     // 链上已完成步数(像素电量条)
     }
     var chains: [Chain] = []
     var loose: [Item] = []
@@ -1253,7 +1304,8 @@ struct TodoPreviewData {
                 data.loose.append(it)
             }
         }
-        for (_, steps) in grouped {
+        let doneCounts = db.doneStepCounts()
+        for (pid, steps) in grouped {
             let sorted = steps.sorted {
                 if let a = $0.seq, let b = $1.seq { return a < b }
                 if $0.seq != nil { return true }
@@ -1265,7 +1317,8 @@ struct TodoPreviewData {
             data.chains.append(Chain(projectName: name,
                                      steps: Array(sorted.prefix(4)),
                                      hasSequence: sorted.contains { $0.seq != nil },
-                                     totalSteps: sorted.count))
+                                     totalSteps: sorted.count,
+                                     doneSteps: doneCounts[pid] ?? 0))
         }
         data.chains.sort { ($0.steps.first?.urgency ?? 0) > ($1.steps.first?.urgency ?? 0) }
         data.totalOpen = data.chains.count + data.loose.count

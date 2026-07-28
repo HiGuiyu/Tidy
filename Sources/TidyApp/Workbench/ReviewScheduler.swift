@@ -14,8 +14,15 @@ final class ReviewScheduler {
 
     private var timer: Timer?
     private let defaults = UserDefaults.standard
+    private var lastStretch = Date()
+
+    var stretchOn: Bool {
+        get { defaults.object(forKey: "stretchOn") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "stretchOn") }
+    }
 
     func start() {
+        lastStretch = Date()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
             Task { @MainActor in ReviewScheduler.shared.tick() }
         }
@@ -25,10 +32,36 @@ final class ReviewScheduler {
 
     private func tick() {
         fireItemReminders()
+        fireStretchReminder()
         fireHalfDayBrief()
         fireWaitingNudge()
         fireWeeklySomeday()
         fireWeeklyReviewPrompt()
+    }
+
+    // MARK: - 久坐提醒(每 50 分钟,照顾身体也是生产力)
+
+    private func fireStretchReminder() {
+        guard stretchOn, Date().timeIntervalSince(lastStretch) >= 50 * 60 else { return }
+        lastStretch = Date()
+        Telemetry.record(event: "stretch_fired")
+        if IslandController.shared.isVisible {
+            IslandController.shared.present(event: IslandEvent(
+                icon: "figure.walk", color: Theme.teal,
+                title: "坐了 50 分钟了——站起来活动两分钟",
+                subtitle: "倒杯水 · 看看远处 · 伸个懒腰",
+                actions: [
+                    IslandEvent.Action(label: "好的 ✓", prominent: true) {
+                        Telemetry.record(event: "stretch_ok")
+                    },
+                    IslandEvent.Action(label: "再忙 10 分钟") { [weak self] in
+                        self?.lastStretch = Date().addingTimeInterval(-40 * 60)
+                    },
+                ],
+                duration: 20, kind: "stretch"))
+        } else {
+            ToastManager.shared.showLegacy("🧘 坐了 50 分钟了,站起来活动两分钟", duration: 10)
+        }
     }
 
     // MARK: - 等待清单催办(搁 ≥3 天提示跟进,每日一次)
