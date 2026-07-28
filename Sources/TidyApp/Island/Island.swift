@@ -112,6 +112,47 @@ enum Pixel {
         "..XX..",
         "......",
     ]
+    static let star = [    // Tidy 像素 Logo(顶带左上角)
+        "..X..",
+        ".XXX.",
+        "XX.XX",
+        ".XXX.",
+        "..X..",
+    ]
+    static let creatureA = [   // 任务行的像素小生物(两帧走路)
+        ".X.X.X.",
+        "XXXXXXX",
+        "X.XXX.X",
+        "XXXXXXX",
+        ".X...X.",
+    ]
+    static let creatureB = [
+        ".X.X.X.",
+        "XXXXXXX",
+        "X.XXX.X",
+        "XXXXXXX",
+        "X..X..X",
+    ]
+}
+
+/// 任务行小生物:两帧动画,颜色标识项目身份(同项目同色)
+struct CreatureGlyph: View {
+    var color: Color
+    var pixel: CGFloat = 1.7
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.6)) { tl in
+            let a = Int(tl.date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
+            PixelGlyph(pattern: a ? Pixel.creatureA : Pixel.creatureB, color: color, pixel: pixel)
+        }
+    }
+}
+
+/// 项目名 → 稳定的像素色(同项目每次同色)
+func projectHue(_ name: String) -> Color {
+    var h: UInt32 = 5381
+    for u in name.unicodeScalars { h = h &* 33 &+ u.value }
+    return Color(hue: Double(h % 330) / 360.0, saturation: 0.55, brightness: 0.92)
 }
 
 // MARK: - 事件卡片
@@ -394,6 +435,79 @@ final class IslandController {
         withAnimation(.spring(response: 0.6, dampingFraction: 0.76)) {
             model.mode = mode
         }
+    }
+
+    /// 齿轮按钮:在鼠标处弹出完整菜单(与右键菜单同源)
+    func showSettingsMenu() {
+        guard let hosting, let panel else { return }
+        let menu = IslandMenuBridge.shared.buildMenu(model: model)
+        let loc = hosting.convert(panel.mouseLocationOutsideOfEventStream, from: nil)
+        menu.popUp(positioning: nil, at: loc, in: hosting)
+    }
+}
+
+/// NSMenu 需要 target/selector,用桥接对象把菜单项接到 AppActions
+@MainActor
+final class IslandMenuBridge: NSObject {
+    static let shared = IslandMenuBridge()
+
+    func buildMenu(model: IslandModel) -> NSMenu {
+        let m = NSMenu()
+        func add(_ title: String, _ sel: Selector) {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            item.target = self
+            m.addItem(item)
+        }
+        add("打开工作台\t⌥⌘P", #selector(workbench))
+        add("快速捕获\t⌥⌘N", #selector(capture))
+        add("理清收件箱(\(model.inboxCount))\t⌥⌘I", #selector(clarify))
+        add("归档 Finder 选中项\t⌥⌘A", #selector(archive))
+        add("关联 Finder 选中的文档…", #selector(linkDocs))
+        if FocusManager.shared.isActive {
+            add("结束聚焦…", #selector(endFocus))
+        }
+        m.addItem(.separator())
+        add("每周复盘…", #selector(review))
+        add("统计", #selector(stats))
+        add("新手指引", #selector(onboarding))
+        m.addItem(.separator())
+        let styleMenu = NSMenu()
+        for (i, name) in ["素黑", "颗粒", "天光"].enumerated() {
+            let it = NSMenuItem(title: name, action: #selector(setStyle(_:)), keyEquivalent: "")
+            it.target = self
+            it.tag = i
+            it.state = model.style == i ? .on : .off
+            styleMenu.addItem(it)
+        }
+        let styleItem = NSMenuItem(title: "质感", action: nil, keyEquivalent: "")
+        m.addItem(styleItem)
+        m.setSubmenu(styleMenu, for: styleItem)
+        add("AI 设置(.env)…", #selector(openEnv))
+        add("编辑 MEMORY.md", #selector(openMemory))
+        add("自检…", #selector(selfCheck))
+        m.addItem(.separator())
+        add("隐藏灵动岛 1 小时", #selector(hideIsland))
+        add("退出 Tidy", #selector(quit))
+        return m
+    }
+
+    @objc private func workbench() { AppActions.workbench() }
+    @objc private func capture() { AppActions.capture() }
+    @objc private func clarify() { AppActions.clarify() }
+    @objc private func archive() { AppActions.archiveFinder() }
+    @objc private func linkDocs() { AppActions.linkDocs() }
+    @objc private func endFocus() { AppActions.endFocus() }
+    @objc private func review() { AppActions.review() }
+    @objc private func stats() { AppActions.stats() }
+    @objc private func onboarding() { AppActions.onboarding() }
+    @objc private func openEnv() { AppActions.openEnv() }
+    @objc private func openMemory() { AppActions.openMemory() }
+    @objc private func selfCheck() { AppActions.selfCheck() }
+    @objc private func hideIsland() { IslandController.shared.hideTemporarily() }
+    @objc private func quit() { AppActions.quit() }
+    @objc private func setStyle(_ sender: NSMenuItem) {
+        IslandController.shared.model.style = sender.tag
+        UserDefaults.standard.set(sender.tag, forKey: "islandStyle")
     }
 }
 
@@ -810,79 +924,113 @@ struct IslandView: View {
         .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
     }
 
-    /// 头部利用刘海两侧的横带(紧贴上边缘,不浪费空间):
-    /// 左侧状态,右侧纯图标按钮(工作台/音效)
+    /// 顶带(vibeisland 式):左 = 像素 Logo + 彩色数字统计;右 = ✓今日 + 喇叭 + 齿轮。
+    /// 刘海机型分列两侧横带,紧贴屏幕上缘。
     private var peekHeader: some View {
         Group {
             if notchWidth > 0 {
                 let side = max(60, (expandedWidth - notchWidth) / 2)
                 HStack(spacing: 0) {
-                    HStack(spacing: 6) {
-                        leftWing
-                        Text(model.statusLine.isEmpty ? "心如止水 🧘" : model.statusLine)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.9)).lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.leading, 14)
-                    .frame(width: side, alignment: .leading)
+                    headerStats
+                        .padding(.leading, 16)
+                        .frame(width: side, alignment: .leading)
                     Color.clear.frame(width: notchWidth)
-                    HStack(spacing: 12) {
-                        Spacer(minLength: 0)
-                        if let d = model.preview, d.doneToday > 0 {
-                            Text("✓\(d.doneToday)")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundStyle(Theme.success.opacity(0.9))
-                        }
-                        headerIcons
-                    }
-                    .padding(.trailing, 14)
-                    .frame(width: side, alignment: .trailing)
+                    headerControls
+                        .padding(.trailing, 16)
+                        .frame(width: side, alignment: .trailing)
                 }
                 .frame(height: collapsedHeight)
             } else {
-                HStack(spacing: 8) {
-                    leftWing
-                    Text(model.statusLine.isEmpty ? "心如止水 🧘" : model.statusLine)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+                HStack {
+                    headerStats
                     Spacer()
-                    if let d = model.preview, d.doneToday > 0 {
-                        Text("✓\(d.doneToday)")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Theme.success.opacity(0.9))
-                    }
-                    headerIcons
+                    headerControls
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 16)
                 .frame(height: 28)
                 .padding(.top, 2)
             }
         }
     }
 
-    /// 右上角纯图标:工作台 / 音效开关
-    private var headerIcons: some View {
-        HStack(spacing: 11) {
-            Button {
-                SoundFX.tap()
-                AppActions.workbench()
-            } label: {
-                Image(systemName: "square.grid.2x2.fill")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
+    /// 左统计带:Logo + 数字(等宽字,彩色高亮,灰色分隔)
+    private var headerStats: some View {
+        HStack(spacing: 7) {
+            if model.twoMinText != nil {
+                WorkingGlyph(pattern: Pixel.bolt, color: Theme.warning, pixel: 1.7)
+            } else if model.focusText != nil {
+                WorkingGlyph(pattern: Pixel.play, color: Theme.success, pixel: 1.7)
+            } else {
+                PixelGlyph(pattern: Pixel.star, color: Color(red: 1.0, green: 0.58, blue: 0.2), pixel: 1.9)
             }
-            .buttonStyle(.plain)
-            .help("打开工作台(⌥⌘P)")
+            Group {
+                if let t = model.twoMinText {
+                    statNum(t, Theme.warning)
+                    statLabel("马上做")
+                } else if let f = model.focusText {
+                    statNum(shortCountdown(f), Theme.success)
+                    statLabel("聚焦中")
+                } else {
+                    if model.actionCount > 0 {
+                        statNum("\(model.actionCount)", Color(red: 0.42, green: 0.62, blue: 1.0))
+                        statLabel("待办")
+                    }
+                    if model.inboxCount > 0 {
+                        statDivider
+                        statNum("\(model.inboxCount)", Theme.warning)
+                        statLabel("收件箱")
+                    }
+                    if model.overdue > 0 {
+                        statDivider
+                        statNum("\(model.overdue)", Theme.danger)
+                        statLabel("到点")
+                    }
+                    if model.isCalm {
+                        statLabel("心如止水 🧘")
+                    }
+                }
+            }
+        }
+        .lineLimit(1)
+    }
+
+    private func statNum(_ s: String, _ c: Color) -> some View {
+        Text(s).font(.system(size: 11.5, weight: .bold, design: .monospaced)).foregroundStyle(c)
+    }
+    private func statLabel(_ s: String) -> some View {
+        Text(s).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.45))
+    }
+    private var statDivider: some View {
+        Text("|").font(.system(size: 10)).foregroundStyle(.white.opacity(0.2))
+    }
+
+    /// 右控制带:✓今日 · 喇叭 · 齿轮
+    private var headerControls: some View {
+        HStack(spacing: 13) {
+            if let d = model.preview, d.doneToday > 0 {
+                HStack(spacing: 3) {
+                    statNum("✓\(d.doneToday)", Theme.success)
+                }
+            }
             Button {
                 model.toggleSound()
             } label: {
                 Image(systemName: model.soundOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(model.soundOn ? 0.8 : 0.4))
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(model.soundOn ? 0.85 : 0.4))
             }
             .buttonStyle(.plain)
             .help(model.soundOn ? "关闭音效" : "打开音效")
+            Button {
+                SoundFX.tap()
+                controller.showSettingsMenu()
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            .buttonStyle(.plain)
+            .help("菜单(工作台/理清/设置…)")
         }
     }
 
@@ -927,6 +1075,7 @@ struct IslandView: View {
     private struct PeekRow {
         var project: String?
         var text: String
+        var secondary: String
         var remindAt: Date?
         var lockedCount: Int
         var overdue: Bool { remindAt.map { $0 < Date() } ?? false }
@@ -936,56 +1085,68 @@ struct IslandView: View {
         var rows: [PeekRow] = []
         for chain in data.chains {
             guard let first = chain.steps.first else { continue }
+            let locked = max(0, chain.totalSteps - 1)
+            let sec = (first.expectedOutcome?.isEmpty == false ? "→ \(first.expectedOutcome!)" : nil)
+                ?? (locked > 0 ? "完成这步自动解锁后面 \(locked) 步" : "项目当前唯一在做的一步")
             rows.append(PeekRow(project: chain.projectName,
                                 text: first.nextAction ?? first.title,
+                                secondary: sec,
                                 remindAt: first.remindAt,
-                                lockedCount: max(0, chain.totalSteps - 1)))
+                                lockedCount: locked))
         }
         for it in data.loose {
+            let sec = (it.expectedOutcome?.isEmpty == false ? "→ \(it.expectedOutcome!)" : "独立行动 · 完成即清")
             rows.append(PeekRow(project: nil,
                                 text: it.nextAction ?? it.title,
+                                secondary: sec,
                                 remindAt: it.remindAt,
                                 lockedCount: 0))
         }
         return Array(rows.prefix(6))
     }
 
-    /// 每条任务独立背景框:▶ 项目在前 · 内容在后 · ⏰ · 🔒剩余步数
+    /// 任务行(vibeisland 式,无背景框,靠字重分层):
+    /// 首行 = 粗白标题(项目 · 内容) + 右对齐彩色小方标签;
+    /// 次行 = 像素小生物(项目专属色,微动) + 灰色说明。
     private func taskCard(_ row: PeekRow) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: "play.fill")
-                .font(.system(size: 8))
-                .foregroundStyle(Theme.accent)
-            if let proj = row.project {
-                Text(proj)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.teal)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(row.project.map { "\($0) · \(row.text)" } ?? row.text)
+                    .font(.system(size: 12.5, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.95))
                     .lineLimit(1)
-                    .layoutPriority(1)
-            }
-            Text(row.text)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.white.opacity(0.9))
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            if let r = row.remindAt {
-                Text(DateMention.format(r))
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(row.overdue ? Theme.danger : Theme.warning)
-            }
-            if row.lockedCount > 0 {
-                HStack(spacing: 2) {
-                    Image(systemName: "lock.fill").font(.system(size: 7))
-                    Text("+\(row.lockedCount)").font(.system(size: 9, weight: .semibold, design: .monospaced))
+                Spacer(minLength: 8)
+                if let r = row.remindAt {
+                    metaChip(DateMention.format(r), row.overdue ? Theme.danger : Theme.warning)
                 }
-                .foregroundStyle(.white.opacity(0.35))
+                if row.lockedCount > 0 {
+                    metaChip("+\(row.lockedCount) 步", .white.opacity(0.45))
+                }
+                if let proj = row.project {
+                    metaChip(proj, projectHue(proj))
+                }
+            }
+            HStack(spacing: 7) {
+                CreatureGlyph(color: row.project.map(projectHue) ?? Color(red: 0.42, green: 0.62, blue: 1.0))
+                Text(row.secondary)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .fill(Color.white.opacity(0.07)))
+        .padding(.vertical, 3)
+    }
+
+    /// 彩色小方标签(参考图右侧的 tag chips)
+    private func metaChip(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 9.5, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(color.opacity(0.16)))
+            .lineLimit(1)
     }
 
     // MARK: 归档靶态
