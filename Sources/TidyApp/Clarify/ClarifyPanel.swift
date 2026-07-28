@@ -217,6 +217,7 @@ final class ClarifyController {
         queue = []
         onFinished?()
         onFinished = nil
+        IslandController.shared.refresh()
     }
 }
 

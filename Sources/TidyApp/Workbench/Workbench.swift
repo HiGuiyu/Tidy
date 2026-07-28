@@ -213,6 +213,7 @@ final class WorkbenchModel: ObservableObject {
         filter()
         reloadGTD()
         if let d = detail { open(project: d.project) }
+        IslandController.shared.refresh()   // 状态灯同步
     }
 
     func reloadGTD() {

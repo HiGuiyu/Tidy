@@ -96,8 +96,8 @@ private struct OnboardingView: View {
             }
 
             HStack(spacing: 8) {
-                Image(systemName: "circle.dotted").foregroundStyle(.secondary).font(.system(size: 12))
-                Text("悬浮小圆点 = 状态灯:角标是待办数,悬停预览接下来要做的事,点击打开工作台")
+                Image(systemName: "capsule.fill").foregroundStyle(.secondary).font(.system(size: 12))
+                Text("屏幕顶部的灵动岛 = 状态灯:显示待办数/聚焦倒计时,悬停预览接下来要做的事,点击打开工作台,拖文件上去即归档")
                     .font(Theme.fontCaption).foregroundStyle(.secondary)
             }
 

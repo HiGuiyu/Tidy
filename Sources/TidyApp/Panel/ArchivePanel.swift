@@ -292,6 +292,7 @@ final class ArchivePanelController {
             let results = try Archiver.shared.archive(files: s.files, to: dest, newBaseName: newName)
             recordOutcome(session: s, row: row, dest: dest, latency: latency, usedSearch: usedSearch, itemId: results.first?.itemId)
             close()
+            IslandController.shared.refresh()
             ToastManager.shared.show("已归档到 \(dest.relativePath)", actionTitle: "撤销", duration: 5) {
                 if let msg = Archiver.shared.undoLast() {
                     ToastManager.shared.show(msg, duration: 2.5)

@@ -4,7 +4,6 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
-    private let dropWindow = DropWindowController()
     private var env = EnvConfig.load()
     private var aiClient: OpenAIClient?
     private var selfCheckResults: [SelfCheck.Result] = []
@@ -44,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AppActions.archiveFinder = { [weak self] in self?.archiveFromFinder() }
 
         setupStatusItem()
-        setupDropWindow()
+        setupIsland()
         setupHotKeys()
         setupFocusTicker()
         runSelfCheck()
@@ -70,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         focusMenuItem = NSMenuItem(title: "结束聚焦…", action: #selector(endFocus), keyEquivalent: "")
         menu.addItem(focusMenuItem)
 
-        let toggleDrop = NSMenuItem(title: "显示/隐藏悬浮窗", action: #selector(toggleDropWindow), keyEquivalent: "")
+        let toggleDrop = NSMenuItem(title: "显示/隐藏灵动岛", action: #selector(toggleIsland), keyEquivalent: "")
         menu.addItem(toggleDrop)
         menu.addItem(.separator())
 
@@ -108,14 +107,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 悬浮窗 / 快捷键 / 聚焦
 
-    private func setupDropWindow() {
-        dropWindow.onDrop = { urls in
+    private func setupIsland() {
+        IslandController.shared.onDrop = { urls in
             ArchivePanelController.shared.present(files: urls)
         }
-        // 点击悬浮点 = 展开项目工作台(归档 Finder 选中项走 ⌥⌘A)
-        dropWindow.onClick = { WorkbenchController.shared.toggle() }
-        if UserDefaults.standard.object(forKey: "dropWindowVisible") as? Bool ?? true {
-            dropWindow.show()
+        if UserDefaults.standard.object(forKey: "islandVisible") as? Bool ?? true {
+            IslandController.shared.show()
         }
     }
 
@@ -129,14 +126,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setupFocusTicker() {
+        // 聚焦倒计时显示在灵动岛;岛隐藏时回落到状态栏
         FocusManager.shared.onTick = { [weak self] title in
-            guard let button = self?.statusItem.button else { return }
-            if let title {
-                button.title = " \(title)"
-                button.image = NSImage(systemSymbolName: "timer", accessibilityDescription: "聚焦中")
+            if IslandController.shared.isVisible {
+                IslandController.shared.setFocusText(title)
+                self?.statusItem.button?.title = ""
             } else {
-                button.title = ""
-                button.image = NSImage(systemSymbolName: "archivebox", accessibilityDescription: "TidyApp")
+                IslandController.shared.setFocusText(title)
+                self?.statusItem.button?.title = title.map { " \($0)" } ?? ""
             }
         }
     }
@@ -232,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showReview() { ReviewPanelController.shared.present() }
     @objc private func showOnboarding() { OnboardingController.shared.present() }
     @objc private func endFocus() { FocusManager.shared.requestEnd() }
-    @objc private func toggleDropWindow() { dropWindow.toggle() }
+    @objc private func toggleIsland() { IslandController.shared.toggle() }
 
     @objc private func openInbox() {
         NSWorkspace.shared.open(ParaTree.root.appendingPathComponent("0-Inbox"))
