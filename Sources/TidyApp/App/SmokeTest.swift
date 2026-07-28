@@ -84,9 +84,18 @@ enum SmokeTest {
             }
         }
 
-        // 8. 时间提及识别
+        // 8. 时间提及识别(detect 走系统检测器或中文兜底,CI 英文 locale 下走兜底)
         let mention = DateMention.detect(in: "明天下午3点跟张三对齐接口")
-        check("时间提及识别", mention != nil, mention.map { DateMention.format($0) } ?? "nil")
+        let mentionHour = mention.map { Calendar.current.component(.hour, from: $0) }
+        check("时间提及识别", mention != nil && mentionHour == 15,
+              mention.map { DateMention.format($0) } ?? "nil")
+        // 中文兜底解析(locale 无关)单独验证
+        let zh1 = DateMention.detectChinese("下周三上午10点半评审")
+        check("中文时间兜底:下周X+钟点", zh1.map { Calendar.current.component(.minute, from: $0) } == 30,
+              zh1.map { DateMention.format($0) } ?? "nil")
+        let zh2 = DateMention.detectChinese("8月15号交材料")
+        check("中文时间兜底:X月X号", zh2 != nil, zh2.map { DateMention.format($0) } ?? "nil")
+        check("无时间不误报", DateMention.detectChinese("整理一下会议纪要") == nil)
 
         // 9. 清单路由 + 行动链顺序解锁
         do {
