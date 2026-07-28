@@ -63,10 +63,12 @@ final class ReviewScheduler {
             let names = AppDatabase.shared.projectNames(forItems: [id])
             // 岛事件卡:完成 / 推迟 1 小时 双按钮;岛隐藏时回退单按钮 toast
             if IslandController.shared.isVisible {
+                // 项目在前,内容在后
+                let title = names[id].map { "「\($0)」\(text.prefix(26))" } ?? String(text.prefix(34))
                 IslandController.shared.present(event: IslandEvent(
                     icon: "bell.fill", color: Theme.warning,
-                    title: String(text.prefix(34)),
-                    subtitle: names[id] ?? "时间到了",
+                    title: title,
+                    subtitle: "时间到了",
                     actions: [
                         IslandEvent.Action(label: "完成", prominent: true) {
                             AppDatabase.shared.markItemDone(id)

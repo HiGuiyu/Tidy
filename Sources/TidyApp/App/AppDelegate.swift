@@ -151,12 +151,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         return db.changesCount > 0
                     }) ?? false
                     guard stored else { return }
-                    // 岛事件:AI 草稿就绪,一键采纳(vibeisland 式 agent 通知)
+                    // 岛事件:AI 草稿就绪,一键采纳。项目在前,内容在后
+                    let projLeaf = draft.projectPath.components(separatedBy: "/").last
+                    let draftTitle: String
+                    if draft.isActionable && !draft.nextAction.isEmpty {
+                        draftTitle = projLeaf.map { "「\($0)」\(draft.nextAction.prefix(22))" }
+                            ?? "AI 已理清 → \(draft.nextAction.prefix(24))"
+                    } else {
+                        draftTitle = "AI 已理清:想法,建议\(draft.list == "someday" ? "搁置孵化" : "归档")"
+                    }
                     IslandController.shared.present(event: IslandEvent(
                         icon: "sparkles", color: Theme.violet,
-                        title: draft.isActionable && !draft.nextAction.isEmpty
-                            ? "AI 已理清 → \(draft.nextAction.prefix(24))"
-                            : "AI 已理清:想法,建议\(draft.list == "someday" ? "搁置孵化" : "归档")",
+                        title: draftTitle,
                         subtitle: captured.title,
                         actions: [
                             IslandEvent.Action(label: "采纳", prominent: true) {
@@ -174,15 +180,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         duration: 10, kind: "draft"))
                 }
             }
-            // GTD 两分钟规则:收集时就问
+            // GTD 两分钟规则:点「马上做」即开 2:00 倒计时,岛上像素闪动陪跑
             var msg = focusName != nil ? "已捕获,关联「\(focusName!)」" : "已捕获"
             if let r = remind { msg += " · ⏰ \(DateMention.format(r)) 提醒" }
-            msg += " · 2 分钟能搞定就现在做"
-            ToastManager.shared.show(msg, actionTitle: "⚡ 做完了", duration: 6) {
+            msg += " · 2 分钟能搞定?"
+            let captureTitle = item.title
+            ToastManager.shared.show(msg, actionTitle: "⚡ 马上做", duration: 6) {
                 if let id = item.id {
-                    AppDatabase.shared.markItemDone(id)
-                    Telemetry.record(event: "two_min_done", itemId: id)
-                    ToastManager.shared.show("⚡ 漂亮,两分钟规则 +1", duration: 2)
+                    TwoMinuteTimer.shared.start(itemId: id, title: captureTitle)
                 }
             }
         }
