@@ -38,5 +38,5 @@ if [ "${1:-}" = "--run" ]; then
     pkill -x "${APP_NAME}" 2>/dev/null || true
     sleep 0.3
     open "$APP"
-    echo "==> 已启动(菜单栏找 📥 托盘图标)"
+    echo "==> 已启动(看屏幕顶部中央的灵动岛)"
 fi
