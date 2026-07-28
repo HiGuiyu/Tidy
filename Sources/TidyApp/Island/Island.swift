@@ -144,8 +144,9 @@ final class IslandHostingView: NSHostingView<IslandView> {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let p = convert(point, from: superview)
         let s = coreSize()
-        let rect = NSRect(x: (bounds.width - s.width) / 2,
-                          y: bounds.height - s.height,
+        // NSHostingView 是 flipped 坐标(y=0 在顶):岛体钉在顶部中央
+        let y0: CGFloat = isFlipped ? 0 : bounds.height - s.height
+        let rect = NSRect(x: (bounds.width - s.width) / 2, y: y0,
                           width: s.width, height: s.height)
         return rect.insetBy(dx: -2, dy: -2).contains(p) ? super.hitTest(point) : nil
     }
@@ -188,13 +189,13 @@ final class IslandController {
     }
 
     /// 静默态:收窄的双翼,只做信息显示
-    static let wingWidth: CGFloat = 46
+    static let wingWidth: CGFloat = 54
     static var collapsedWidth: CGFloat {
-        notchWidth > 0 ? notchWidth + wingWidth * 2 : 152
+        notchWidth > 0 ? notchWidth + wingWidth * 2 : 160
     }
-    /// 展开态:不受静默宽度束缚,可达 2.8 倍
+    /// 展开态:静默宽度的 2 倍
     static var expandedWidth: CGFloat {
-        min(collapsedWidth * 2.8, (screen?.frame.width ?? 1440) - 240)
+        min(collapsedWidth * 2.0, (screen?.frame.width ?? 1440) - 240)
     }
 
     // MARK: 生命周期
@@ -258,6 +259,7 @@ final class IslandController {
         if model.event != nil || model.mode == .drop {
             eventQueue.removeAll { $0.kind == event.kind && event.kind != "generic" }
             if eventQueue.count < 3 { eventQueue.append(event) }
+            model.queuedEvents = eventQueue.count
             return
         }
         showEvent(event)
@@ -288,8 +290,10 @@ final class IslandController {
         model.event = nil
         if let next = eventQueue.first {
             eventQueue.removeFirst()
+            model.queuedEvents = eventQueue.count
             showEvent(next)
         } else {
+            model.queuedEvents = 0
             setMode(.collapsed)
             refresh()
         }
@@ -454,6 +458,7 @@ final class IslandModel: ObservableObject {
     @Published var preview: TodoPreviewData? = nil
     @Published var event: IslandEvent? = nil
     @Published var eventProgress: Double = 1
+    @Published var queuedEvents = 0      // 排队中的事件卡数(vibeisland 式 +N 角标)
     var eventHovering = false
 
     func refreshCounts() {
@@ -582,9 +587,9 @@ struct IslandView: View {
         Group {
             if notchWidth > 0 {
                 HStack(spacing: 0) {
-                    leftWing.frame(width: IslandController.wingWidth)
+                    leftWing.frame(width: IslandController.wingWidth).clipped()
                     Color.clear.frame(width: notchWidth)
-                    rightWing.frame(width: IslandController.wingWidth)
+                    rightWing.frame(width: IslandController.wingWidth).clipped()
                 }
                 .frame(height: collapsedHeight)
             } else {
@@ -594,7 +599,8 @@ struct IslandView: View {
                 }
                 .padding(.horizontal, 16)
                 .frame(height: collapsedHeight)
-                .frame(minWidth: IslandController.collapsedWidth)
+                .frame(width: IslandController.collapsedWidth)
+                .clipped()   // 状态信息绝不越过岛体边缘
             }
         }
         .transition(.opacity)
@@ -638,23 +644,22 @@ struct IslandView: View {
         }
     }
 
-    /// 紧凑指示灯:窄翼里最多放两盏,再多显示 +
+    /// 紧凑指示灯:窄翼里放最高优先级一盏 + 溢出点,保证绝不超出岛缘
     private var compactIndicators: some View {
         var lights: [(pattern: [String], color: Color, count: Int)] = []
         if model.overdue > 0 { lights.append((Pixel.bell, Theme.danger, model.overdue)) }
         if model.inboxCount > 0 { lights.append((Pixel.tray, Theme.warning, model.inboxCount)) }
         if model.actionCount > 0 { lights.append((Pixel.bolt, Color(red: 0.42, green: 0.62, blue: 1.0), model.actionCount)) }
-        return HStack(spacing: 5) {
-            ForEach(Array(lights.prefix(2).enumerated()), id: \.offset) { _, l in
-                HStack(spacing: 2) {
-                    PixelGlyph(pattern: l.pattern, color: l.color, pixel: 1.5)
-                    Text(l.count > 99 ? "99" : "\(l.count)")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(l.color.opacity(0.95))
-                }
+        return HStack(spacing: 4) {
+            if let l = lights.first {
+                PixelGlyph(pattern: l.pattern, color: l.color, pixel: 1.6)
+                Text(l.count > 99 ? "99" : "\(l.count)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(l.color.opacity(0.95))
+                    .lineLimit(1)
             }
-            if lights.count > 2 {
-                Text("+").font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.4))
+            if lights.count > 1 {
+                Circle().fill(Color.white.opacity(0.4)).frame(width: 3, height: 3)
             }
         }
     }
@@ -694,6 +699,13 @@ struct IslandView: View {
                             }
                         }
                         Spacer(minLength: 8)
+                        if model.queuedEvents > 0 {
+                            Text("+\(model.queuedEvents)")
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.45))
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(Capsule().fill(Color.white.opacity(0.1)))
+                        }
                         ForEach(e.actions) { action in
                             Button {
                                 controller.runEventAction(action)
@@ -730,80 +742,118 @@ struct IslandView: View {
     // MARK: 预览态
 
     private var peekView: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 leftWing
                 Text(model.statusLine.isEmpty ? "全部清空,心如止水 🧘" : model.statusLine)
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
                 Spacer()
-                Text("点击打开工作台").font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
-            }
-            if let data = model.preview, !(data.chains.isEmpty && data.loose.isEmpty) {
-                Divider().overlay(Color.white.opacity(0.12))
-                ForEach(Array(data.chains.enumerated()), id: \.offset) { _, chain in
-                    darkChain(chain)
+                if let d = model.preview, d.doneToday > 0 {
+                    Text("今日 ✓\(d.doneToday)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Theme.success.opacity(0.9))
                 }
-                if !data.loose.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(data.loose, id: \.id) { it in
-                            HStack(spacing: 6) {
-                                Image(systemName: "play.fill").font(.system(size: 8)).foregroundStyle(Theme.accent)
-                                Text(it.nextAction ?? it.title)
-                                    .font(.system(size: 12)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
-                                if let r = it.remindAt {
-                                    Text(DateMention.format(r)).font(.system(size: 10))
-                                        .foregroundStyle(r < Date() ? Theme.danger : Theme.warning)
-                                }
-                            }
+                Text("点击开工作台").font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
+            }
+            if let data = model.preview {
+                let rows = peekRows(data)
+                if rows.isEmpty {
+                    Text(data.inboxCount > 0
+                         ? "行动清单空着,收件箱有 \(data.inboxCount) 条待理清(⌥⌘I)"
+                         : "没有待办。⌥⌘N 捕获想法,拖文件到这里归档")
+                        .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.6))
+                        .padding(.vertical, 4)
+                } else {
+                    VStack(spacing: 5) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                            taskCard(row)
                         }
                     }
+                    let hidden = data.totalOpen - rows.count
+                    HStack(spacing: 8) {
+                        if hidden > 0 {
+                            Text("还有 \(hidden) 条 · 工作台查看")
+                                .font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                        }
+                        if data.inboxCount > 0 {
+                            Text("收件箱 \(data.inboxCount) 待理清")
+                                .font(.system(size: 10)).foregroundStyle(Theme.warning.opacity(0.85))
+                        }
+                        Spacer()
+                    }
                 }
-                if data.inboxCount > 0 {
-                    Text("收件箱 \(data.inboxCount) 条待理清 · ⌥⌘I")
-                        .font(.system(size: 10.5)).foregroundStyle(Theme.warning.opacity(0.9))
-                }
-            } else if model.preview?.inboxCount ?? 0 > 0 {
-                Text("行动清单空着,收件箱有 \(model.preview!.inboxCount) 条待理清(⌥⌘I)")
-                    .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.7))
-            } else {
-                Text("没有待办。⌥⌘N 捕获想法,拖文件到这里归档")
-                    .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
             }
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
         .padding(.top, notchInset > 0 ? notchInset + 6 : 12)
         .padding(.bottom, 12)
         .frame(width: expandedWidth, alignment: .leading)
         .transition(.opacity)
     }
 
-    /// 深色行动链:项目在前,内容在后;▶ 当前步,🔒 后置步
-    private func darkChain(_ chain: TodoPreviewData.Chain) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(Array(chain.steps.prefix(3).enumerated()), id: \.element.id) { idx, step in
-                HStack(spacing: 6) {
-                    if idx == 0 {
-                        Image(systemName: "play.fill").font(.system(size: 8)).foregroundStyle(Theme.accent)
-                        Text(chain.projectName)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Theme.teal)
-                    } else {
-                        Image(systemName: chain.hasSequence ? "lock.fill" : "circle.dotted")
-                            .font(.system(size: 7)).foregroundStyle(.white.opacity(0.25))
-                            .padding(.leading, 8)
-                    }
-                    Text(step.nextAction ?? step.title)
-                        .font(.system(size: idx == 0 ? 12 : 10.5, weight: idx == 0 ? .medium : .regular))
-                        .foregroundStyle(idx == 0 ? .white.opacity(0.92) : .white.opacity(0.4))
-                        .lineLimit(1)
-                    if idx == 0, let r = step.remindAt {
-                        Text(DateMention.format(r)).font(.system(size: 9.5))
-                            .foregroundStyle(r < Date() ? Theme.danger : Theme.warning)
-                    }
-                    Spacer(minLength: 0)
+    /// 预览行:同一项目合并为一行(当前步 + 剩余锁定数);独立行动各占一行。最多 6 条。
+    private struct PeekRow {
+        var project: String?
+        var text: String
+        var remindAt: Date?
+        var lockedCount: Int
+        var overdue: Bool { remindAt.map { $0 < Date() } ?? false }
+    }
+
+    private func peekRows(_ data: TodoPreviewData) -> [PeekRow] {
+        var rows: [PeekRow] = []
+        for chain in data.chains {
+            guard let first = chain.steps.first else { continue }
+            rows.append(PeekRow(project: chain.projectName,
+                                text: first.nextAction ?? first.title,
+                                remindAt: first.remindAt,
+                                lockedCount: max(0, chain.totalSteps - 1)))
+        }
+        for it in data.loose {
+            rows.append(PeekRow(project: nil,
+                                text: it.nextAction ?? it.title,
+                                remindAt: it.remindAt,
+                                lockedCount: 0))
+        }
+        return Array(rows.prefix(6))
+    }
+
+    /// 每条任务独立背景框:▶ 项目在前 · 内容在后 · ⏰ · 🔒剩余步数
+    private func taskCard(_ row: PeekRow) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "play.fill")
+                .font(.system(size: 8))
+                .foregroundStyle(Theme.accent)
+            if let proj = row.project {
+                Text(proj)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.teal)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
+            Text(row.text)
+                .font(.system(size: 11.5))
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if let r = row.remindAt {
+                Text(DateMention.format(r))
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(row.overdue ? Theme.danger : Theme.warning)
+            }
+            if row.lockedCount > 0 {
+                HStack(spacing: 2) {
+                    Image(systemName: "lock.fill").font(.system(size: 7))
+                    Text("+\(row.lockedCount)").font(.system(size: 9, weight: .semibold, design: .monospaced))
                 }
+                .foregroundStyle(.white.opacity(0.35))
             }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(Color.white.opacity(0.07)))
     }
 
     // MARK: 归档靶态
@@ -856,11 +906,13 @@ struct TodoPreviewData {
         let projectName: String
         let steps: [Item]
         let hasSequence: Bool
+        let totalSteps: Int
     }
     var chains: [Chain] = []
     var loose: [Item] = []
     var inboxCount = 0
     var doneToday = 0
+    var totalOpen = 0     // 合并后的可见任务总数(项目算 1 条 + 独立行动各 1 条)
 
     var isEmpty: Bool { chains.isEmpty && loose.isEmpty && inboxCount == 0 }
 
@@ -894,11 +946,13 @@ struct TodoPreviewData {
                   let name = names[fid] else { continue }
             data.chains.append(Chain(projectName: name,
                                      steps: Array(sorted.prefix(4)),
-                                     hasSequence: sorted.contains { $0.seq != nil }))
+                                     hasSequence: sorted.contains { $0.seq != nil },
+                                     totalSteps: sorted.count))
         }
         data.chains.sort { ($0.steps.first?.urgency ?? 0) > ($1.steps.first?.urgency ?? 0) }
-        data.chains = Array(data.chains.prefix(3))
-        data.loose = Array(data.loose.prefix(3))
+        data.totalOpen = data.chains.count + data.loose.count
+        data.chains = Array(data.chains.prefix(6))
+        data.loose = Array(data.loose.prefix(6))
         return data
     }
 }
