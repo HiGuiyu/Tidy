@@ -200,8 +200,8 @@ final class ArchivePanelController {
             let f = screen.visibleFrame
             p.setFrameTopLeftPoint(NSPoint(x: f.midX - width / 2, y: f.minY + f.height * 0.78))
         }
-        p.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        p.makeKeyAndOrderFront(nil)
         panel = p
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -409,7 +409,10 @@ struct ArchivePanelView: View {
             footer
         }
         .panelChrome(width: 580)
-        .onAppear { focus = .search }
+        .onAppear {
+            focus = .search
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { focus = .search }
+        }
         .onChange(of: session.renameMode) { _, renaming in
             focus = renaming ? .rename : .search
         }

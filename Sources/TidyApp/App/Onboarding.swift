@@ -40,8 +40,8 @@ final class OnboardingController {
             p.setFrameTopLeftPoint(NSPoint(x: f.midX - hosting.fittingSize.width / 2,
                                            y: f.minY + f.height * 0.86))
         }
-        p.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        p.makeKeyAndOrderFront(nil)
         panel = p
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let panel = self.panel, panel.isKeyWindow else { return event }

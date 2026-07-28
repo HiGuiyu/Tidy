@@ -39,8 +39,8 @@ final class NewProjectController {
             p.setFrameTopLeftPoint(NSPoint(x: f.midX - hosting.fittingSize.width / 2,
                                            y: f.minY + f.height * 0.8))
         }
-        p.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        p.makeKeyAndOrderFront(nil)
         panel = p
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in

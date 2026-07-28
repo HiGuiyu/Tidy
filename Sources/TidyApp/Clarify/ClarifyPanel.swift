@@ -115,8 +115,8 @@ final class ClarifyController {
             let f = screen.visibleFrame
             p.setFrameTopLeftPoint(NSPoint(x: f.midX - h.fittingSize.width / 2, y: f.minY + f.height * 0.82))
         }
-        p.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        p.makeKeyAndOrderFront(nil)
         panel = p
         hosting = h
 

@@ -50,8 +50,9 @@ final class InputPanelController {
             let f = screen.visibleFrame
             p.setFrameTopLeftPoint(NSPoint(x: f.midX - width / 2, y: f.minY + f.height * 0.78))
         }
-        p.makeKeyAndOrderFront(nil)
+        // 先激活应用再置 key,否则非激活状态下 TextField 拿不到光标
         NSApp.activate(ignoringOtherApps: true)
+        p.makeKeyAndOrderFront(nil)
         panel = p
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -111,6 +112,10 @@ private struct InputPanelView: View {
         }
         .padding(16)
         .panelChrome(width: 560)
-        .onAppear { focused = true }
+        .onAppear {
+            // 立即 + 延迟双重置焦:面板激活时序偶发吞掉第一次 FocusState
+            focused = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { focused = true }
+        }
     }
 }

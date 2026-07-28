@@ -2,6 +2,110 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - 造型:贴顶粘连
+
+/// 岛形:上缘与屏幕边缘"粘连"——顶部两角向外张开的凹弧(水滴挂在天花板的张力感),
+/// 下缘圆角。bottomRadius 可动画,展开时圆角变大。
+struct IslandShape: Shape {
+    var bottomRadius: CGFloat
+    var flare: CGFloat = 9
+
+    var animatableData: CGFloat {
+        get { bottomRadius }
+        set { bottomRadius = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let x0 = rect.minX + flare        // 岛体左缘
+        let x1 = rect.maxX - flare        // 岛体右缘
+        let r = min(bottomRadius, (x1 - x0) / 2, rect.height - flare)
+        // 顶边(含左右外扩粘连弧)
+        p.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        p.addQuadCurve(to: CGPoint(x: x0, y: rect.minY + flare),
+                       control: CGPoint(x: x0, y: rect.minY))
+        // 左缘直落 → 左下圆角
+        p.addLine(to: CGPoint(x: x0, y: rect.maxY - r))
+        p.addArc(center: CGPoint(x: x0 + r, y: rect.maxY - r), radius: r,
+                 startAngle: .degrees(180), endAngle: .degrees(90), clockwise: true)
+        // 底边 → 右下圆角
+        p.addLine(to: CGPoint(x: x1 - r, y: rect.maxY))
+        p.addArc(center: CGPoint(x: x1 - r, y: rect.maxY - r), radius: r,
+                 startAngle: .degrees(90), endAngle: .degrees(0), clockwise: true)
+        // 右缘上行 → 右侧粘连弧回到顶边
+        p.addLine(to: CGPoint(x: x1, y: rect.minY + flare))
+        p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY),
+                       control: CGPoint(x: x1, y: rect.minY))
+        p.closeSubpath()
+        return p
+    }
+}
+
+// MARK: - 像素图标(vibeisland 式 8-bit 常驻状态标)
+
+/// 用像素阵列画的小图标:'X' = 实心格
+struct PixelGlyph: View {
+    let pattern: [String]
+    var color: Color
+    var pixel: CGFloat = 1.8
+
+    var body: some View {
+        Canvas { ctx, _ in
+            for (y, row) in pattern.enumerated() {
+                for (x, ch) in row.enumerated() where ch == "X" {
+                    ctx.fill(Path(CGRect(x: CGFloat(x) * pixel, y: CGFloat(y) * pixel,
+                                         width: pixel - 0.3, height: pixel - 0.3)),
+                             with: .color(color))
+                }
+            }
+        }
+        .frame(width: CGFloat(pattern.map(\.count).max() ?? 0) * pixel,
+               height: CGFloat(pattern.count) * pixel)
+    }
+}
+
+enum Pixel {
+    static let bolt = [    // 行动 ⚡
+        "...XX.",
+        "..XX..",
+        ".XXXX.",
+        "...XX.",
+        "..XX..",
+        ".XX...",
+    ]
+    static let bell = [    // 提醒到点 🔔
+        "..XX..",
+        ".XXXX.",
+        ".XXXX.",
+        ".XXXX.",
+        "XXXXXX",
+        "..XX..",
+    ]
+    static let tray = [    // 收件箱 📥
+        "..XX..",
+        "..XX..",
+        ".XXXX.",
+        "X....X",
+        "X....X",
+        "XXXXXX",
+    ]
+    static let play = [    // 聚焦中 ▶
+        "X.....",
+        "XX....",
+        "XXX...",
+        "XXXX..",
+        "XXX...",
+        "XX....",
+        "X.....",
+    ]
+    static let calm = [    // 心如止水
+        "......",
+        "..XX..",
+        "..XX..",
+        "......",
+    ]
+}
+
 // MARK: - 事件卡片
 
 /// 岛上的一张事件卡:图标徽章 + 标题/副题 + 药丸按钮 + 底部倒计时进度条
@@ -209,13 +313,17 @@ final class IslandController {
     private func setMode(_ mode: IslandModel.Mode) {
         guard model.mode != mode else { return }
         if mode != .peek { model.preview = nil }
-        withAnimation(.spring(duration: 0.28, bounce: 0.22)) {
+        // 动力学:较慢的弹簧,带一点回弹,像物体自然舒展而非瞬移
+        withAnimation(.spring(response: 0.52, dampingFraction: 0.72)) {
             model.mode = mode
         }
         relayout()
     }
 
-    // MARK: 布局:顶部中心锚定,向两侧与下方对称生长
+    // MARK: 布局:固定在主屏顶部中心,向两侧与下方对称生长
+
+    /// 岛所在屏幕:固定主屏(内建屏),不随键盘焦点跳屏
+    static var screen: NSScreen? { NSScreen.screens.first ?? NSScreen.main }
 
     private func relayout(animate: Bool = true) {
         guard let panel, let hosting else { return }
@@ -224,14 +332,15 @@ final class IslandController {
         size.width = max(size.width, Self.minCollapsedWidth)
         guard abs(size.width - lastSize.width) > 0.5 || abs(size.height - lastSize.height) > 0.5 else { return }
         lastSize = size
-        guard let screen = NSScreen.main else { return }
+        guard let screen = Self.screen else { return }
         let f = screen.frame
         let frame = NSRect(x: f.midX - size.width / 2, y: f.maxY - size.height,
                            width: size.width, height: size.height)
         if animate, panel.isVisible {
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.24
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                // 带轻微过冲的贝塞尔:展开有"弹开"的动力学,而非线性抵达
+                ctx.duration = 0.5
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.32, 1.25, 0.5, 1.0)
                 panel.animator().setFrame(frame, display: true)
             }
         } else {
@@ -240,19 +349,22 @@ final class IslandController {
     }
 
     /// 刘海高度(0 = 无刘海)
-    static var notchInset: CGFloat { NSScreen.main?.safeAreaInsets.top ?? 0 }
+    static var notchInset: CGFloat { screen?.safeAreaInsets.top ?? 0 }
 
     /// 刘海宽度(0 = 无刘海):内容避开这段,分布在左右翼
     static var notchWidth: CGFloat {
-        guard let s = NSScreen.main, s.safeAreaInsets.top > 0 else { return 0 }
+        guard let s = screen, s.safeAreaInsets.top > 0 else { return 0 }
         let left = s.auxiliaryTopLeftArea?.width ?? 0
         let right = s.auxiliaryTopRightArea?.width ?? 0
         return max(0, s.frame.width - left - right)
     }
 
-    /// 静默态最小宽度:刘海两侧各露出一段"翼"才有岛的存在感
+    /// 左右翼各自的宽度(对称,保证岛严格以刘海/屏幕中线为轴)
+    static let wingWidth: CGFloat = 72
+
+    /// 静默态最小宽度
     static var minCollapsedWidth: CGFloat {
-        notchWidth > 0 ? notchWidth + 116 : 168
+        notchWidth > 0 ? notchWidth + wingWidth * 2 : 176
     }
 }
 
@@ -319,15 +431,15 @@ struct IslandView: View {
             }
         }
         .background(islandShape.fill(.black))
-        .overlay(alignment: .bottom) {
-            // 展开态底部微光描边,静默态隐去(与刘海无缝)
+        .overlay {
+            // 展开态微光描边,静默态隐去(与刘海无缝)
             if model.mode != .collapsed {
-                islandShape.strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
+                islandShape.stroke(Color.white.opacity(0.1), lineWidth: 0.5)
             }
         }
         .compositingGroup()
-        .shadow(color: .black.opacity(model.mode == .collapsed ? 0 : 0.45),
-                radius: 14, y: 6)
+        .shadow(color: .black.opacity(model.mode == .collapsed ? 0 : 0.5),
+                radius: 16, y: 7)
         .contentShape(Rectangle())
         .onHover { onHoverChange($0) }
         .onTapGesture { onClick() }
@@ -342,11 +454,9 @@ struct IslandView: View {
         .help("Tidy · 悬停看待办 · 点击开工作台 · 拖文件归档 · 右键菜单")
     }
 
-    private var islandShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(topLeadingRadius: 0,
-                               bottomLeadingRadius: model.mode == .collapsed ? 12 : 18,
-                               bottomTrailingRadius: model.mode == .collapsed ? 12 : 18,
-                               topTrailingRadius: 0, style: .continuous)
+    /// 贴顶粘连造型:静默小圆角,展开大圆角(可动画)
+    private var islandShape: IslandShape {
+        IslandShape(bottomRadius: model.mode == .collapsed ? 11 : 20)
     }
 
     // MARK: 右键菜单(菜单栏图标已移除,岛是唯一入口)
@@ -378,52 +488,106 @@ struct IslandView: View {
         Button("退出 Tidy") { AppActions.quit() }
     }
 
-    // MARK: 静默态:刘海左右翼布局
+    // MARK: 静默态:像素状态标 + 对称双翼
+
+    /// 常驻像素指示灯:每个维度一个 8-bit 小标,不同颜色不同图形,非零才亮
+    private var pixelIndicators: some View {
+        HStack(spacing: 9) {
+            if model.overdue > 0 {
+                miniIndicator(Pixel.bell, Theme.danger, model.overdue)
+            }
+            if model.inboxCount > 0 {
+                miniIndicator(Pixel.tray, Theme.warning, model.inboxCount)
+            }
+            if model.actionCount > 0 {
+                miniIndicator(Pixel.bolt, Color(red: 0.42, green: 0.62, blue: 1.0), model.actionCount)
+            }
+            if model.isCalm {
+                PixelGlyph(pattern: Pixel.calm, color: .white.opacity(0.35), pixel: 1.8)
+            }
+        }
+    }
+
+    private func miniIndicator(_ pattern: [String], _ color: Color, _ count: Int) -> some View {
+        HStack(spacing: 3) {
+            PixelGlyph(pattern: pattern, color: color, pixel: 1.8)
+            Text(count > 99 ? "99" : "\(count)")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(color.opacity(0.95))
+        }
+    }
 
     private var collapsedView: some View {
-        let s = model.status
-        return Group {
+        Group {
             if notchWidth > 0 {
-                // 刘海机型:图标在左翼,文字在右翼,中间让给刘海——真·融合
+                // 刘海机型:双翼严格对称,中间让给刘海——以刘海中线为轴
                 HStack(spacing: 0) {
-                    Image(systemName: s.icon)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(s.color)
-                        .frame(width: 50)
+                    leftWing
+                        .frame(width: IslandController.wingWidth)
                     Color.clear.frame(width: notchWidth)
-                    Group {
-                        if s.text.isEmpty {
-                            Circle().fill(Color.white.opacity(0.25)).frame(width: 4, height: 4)
-                        } else {
-                            Text(s.text)
-                                .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.9))
-                                .lineLimit(1)
-                        }
-                    }
-                    .frame(minWidth: 50)
-                    .padding(.horizontal, 8)
+                    rightWing
+                        .frame(width: IslandController.wingWidth)
                 }
                 .frame(height: collapsedHeight)
             } else {
-                // 无刘海:覆盖菜单栏中央的紧凑条
-                HStack(spacing: 6) {
-                    Image(systemName: s.icon)
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(s.color)
-                    if !s.text.isEmpty {
-                        Text(s.text)
-                            .font(.system(size: 11.5, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.9))
+                // 无刘海:居中紧凑条
+                HStack(spacing: 10) {
+                    if let f = model.focusText {
+                        PixelGlyph(pattern: Pixel.play, color: Theme.success, pixel: 1.8)
+                        Text(f)
+                            .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Theme.success)
                             .lineLimit(1)
+                    } else {
+                        pixelIndicators
                     }
                 }
-                .padding(.horizontal, 18)
+                .padding(.horizontal, 20)
                 .frame(height: collapsedHeight)
                 .frame(minWidth: IslandController.minCollapsedWidth)
             }
         }
-        .transition(.scale(scale: 0.92).combined(with: .opacity))
+        .transition(.scale(scale: 0.94).combined(with: .opacity))
+    }
+
+    /// 左翼:聚焦时绿色 ▶,平时最高优先级状态标
+    private var leftWing: some View {
+        Group {
+            if model.focusText != nil {
+                PixelGlyph(pattern: Pixel.play, color: Theme.success, pixel: 1.9)
+            } else if model.overdue > 0 {
+                PixelGlyph(pattern: Pixel.bell, color: Theme.danger, pixel: 1.9)
+            } else if model.inboxCount >= 5 {
+                PixelGlyph(pattern: Pixel.tray, color: Theme.warning, pixel: 1.9)
+            } else if model.actionCount > 0 {
+                PixelGlyph(pattern: Pixel.bolt, color: Color(red: 0.42, green: 0.62, blue: 1.0), pixel: 1.9)
+            } else {
+                PixelGlyph(pattern: Pixel.calm, color: .white.opacity(0.35), pixel: 1.9)
+            }
+        }
+    }
+
+    /// 右翼:聚焦时倒计时(等宽字),平时并列的像素指示灯
+    private var rightWing: some View {
+        Group {
+            if let f = model.focusText {
+                Text(shortCountdown(f))
+                    .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.success)
+                    .lineLimit(1)
+            } else if model.isCalm {
+                Circle().fill(Color.white.opacity(0.28)).frame(width: 4, height: 4)
+            } else {
+                pixelIndicators
+            }
+        }
+    }
+
+    /// 聚焦文本裁剪为纯倒计时("⏱ 18:32 项目名" → "18:32"),项目名在 hover 预览里看
+    private func shortCountdown(_ text: String) -> String {
+        let parts = text.split(separator: " ")
+        for p in parts where p.contains(":") { return String(p) }
+        return String(text.prefix(6))
     }
 
     // MARK: 事件卡:徽章 + 标题 + 药丸按钮 + 倒计时进度条
@@ -493,9 +657,9 @@ struct IslandView: View {
 
     private var peekView: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 let s = model.status
-                Image(systemName: s.icon).font(.system(size: 12, weight: .semibold)).foregroundStyle(s.color)
+                leftWing
                 Text(s.text.isEmpty ? "全部清空,心如止水 🧘" : s.text)
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
                 Spacer()

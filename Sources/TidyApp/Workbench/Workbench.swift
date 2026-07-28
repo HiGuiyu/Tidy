@@ -88,8 +88,8 @@ final class WorkbenchController {
             let f = screen.visibleFrame
             p.setFrameTopLeftPoint(NSPoint(x: f.midX - width / 2, y: f.minY + f.height * 0.87))
         }
-        p.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        p.makeKeyAndOrderFront(nil)
         panel = p
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -419,7 +419,10 @@ struct WorkbenchView: View {
             Text("esc 关闭").font(Theme.fontCaption).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 18).padding(.vertical, 14)
-        .onAppear { searchFocused = true }
+        .onAppear {
+            searchFocused = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { searchFocused = true }
+        }
     }
 
     private var tabBar: some View {
