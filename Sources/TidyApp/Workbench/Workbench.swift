@@ -58,6 +58,7 @@ final class WorkbenchController {
 
     func present(tab: Tab = .overview) {
         close()
+        MemoryStore.shared.syncFromFiles()   // 手工编辑过 MEMORY.md 的同步时机(原菜单栏打开时)
         _ = ParaTree.shared.freshDestinations()
         let m = WorkbenchModel()
         m.tab = tab
@@ -280,24 +281,7 @@ final class WorkbenchModel: ObservableObject {
     /// 采纳单条 AI 草稿(一键理清,零表单)
     func adopt(_ e: InboxEntry) {
         guard let d = e.draft, let id = e.item.id else { return }
-        let pid = all.first { $0.path == d.projectPath }?.id
-        var remind: Date? = nil
-        if !d.remindDate.isEmpty {
-            let f = DateFormatter()
-            f.dateFormat = "yyyy-MM-dd HH:mm"
-            remind = f.date(from: d.remindDate)
-        }
-        AppDatabase.shared.applyClarify(
-            itemId: id, isActionable: d.isActionable,
-            nextAction: d.isActionable && !d.nextAction.isEmpty ? d.nextAction : nil,
-            projectId: pid,
-            importance: d.important ? 1 : 0, urgency: d.urgent ? 1 : 0,
-            list: d.isActionable ? d.list : "someday",
-            expectedOutcome: d.expectedOutcome.isEmpty ? nil : d.expectedOutcome,
-            waitingFor: d.list == "waiting" && !d.waitingFor.isEmpty ? d.waitingFor : nil,
-            remindAt: remind ?? e.item.remindAt)
-        Telemetry.record(event: "clarify_adopt", itemId: id,
-                         chosenPath: d.isActionable ? d.list : "someday", usedCloud: true)
+        ClarifyController.adopt(itemId: id, draft: d)
     }
 
     /// 一键采纳全部草稿

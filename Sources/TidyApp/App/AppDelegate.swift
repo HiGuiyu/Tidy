@@ -1,15 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// 菜单栏图标已移除:灵动岛是唯一常驻入口(右键菜单承接全部功能),
+/// 全局快捷键独立可用。
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private var statusItem: NSStatusItem!
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var env = EnvConfig.load()
     private var aiClient: OpenAIClient?
     private var selfCheckResults: [SelfCheck.Result] = []
-    private var selfCheckMenuItem: NSMenuItem!
-    private var inboxMenuItem: NSMenuItem!
-    private var focusMenuItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -38,11 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 定期提醒:待办半天一次、收件箱每日、搁置每周、每周复盘、单条到点提醒
         ReviewScheduler.shared.start()
 
-        // 全局动作注册:让工作台流程条能直接触发捕获/归档
-        AppActions.capture = { [weak self] in self?.showCapture() }
-        AppActions.archiveFinder = { [weak self] in self?.archiveFromFinder() }
-
-        setupStatusItem()
+        registerActions()
         setupIsland()
         setupHotKeys()
         setupFocusTicker()
@@ -50,70 +44,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         OnboardingController.shared.showIfFirstLaunch()
     }
 
-    // MARK: - 状态栏
+    // MARK: - 全局动作注册(灵动岛右键菜单 + 各面板共用)
 
-    private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "archivebox", accessibilityDescription: "TidyApp")
-        }
-        let menu = NSMenu()
-        menu.delegate = self
-
-        menu.addItem(withTitle: "归档 Finder 选中项", action: #selector(archiveFromFinder), keyEquivalent: "")
-        menu.addItem(withTitle: "快速捕获想法", action: #selector(showCapture), keyEquivalent: "")
-        menu.addItem(withTitle: "项目工作台", action: #selector(showWorkbench), keyEquivalent: "")
-        menu.addItem(withTitle: "撤销上次归档", action: #selector(undoLast), keyEquivalent: "")
-        menu.addItem(.separator())
-
-        focusMenuItem = NSMenuItem(title: "结束聚焦…", action: #selector(endFocus), keyEquivalent: "")
-        menu.addItem(focusMenuItem)
-
-        let toggleDrop = NSMenuItem(title: "显示/隐藏灵动岛", action: #selector(toggleIsland), keyEquivalent: "")
-        menu.addItem(toggleDrop)
-        menu.addItem(.separator())
-
-        inboxMenuItem = NSMenuItem(title: "收件箱", action: #selector(startClarify), keyEquivalent: "")
-        menu.addItem(inboxMenuItem)
-        menu.addItem(withTitle: "打开 0-Inbox 目录", action: #selector(openInbox), keyEquivalent: "")
-        menu.addItem(withTitle: "每周复盘…", action: #selector(showReview), keyEquivalent: "")
-        menu.addItem(withTitle: "新手指引(GTD 心法)…", action: #selector(showOnboarding), keyEquivalent: "")
-        menu.addItem(withTitle: "统计…", action: #selector(showStats), keyEquivalent: "")
-        selfCheckMenuItem = NSMenuItem(title: "自检:运行中…", action: #selector(showSelfCheck), keyEquivalent: "")
-        menu.addItem(selfCheckMenuItem)
-        menu.addItem(.separator())
-
-        menu.addItem(withTitle: "AI 设置(.env)…", action: #selector(openEnvSettings), keyEquivalent: "")
-        menu.addItem(withTitle: "编辑 MEMORY.md(归档规则)", action: #selector(openMemoryFile), keyEquivalent: "")
-        menu.addItem(withTitle: "编辑 USER.md(用户画像)", action: #selector(openUserFile), keyEquivalent: "")
-        menu.addItem(withTitle: "打开 PARA 目录", action: #selector(openPara), keyEquivalent: "")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "⌥⌘A 归档 · ⌥⌘N 捕获 · ⌥⌘I 理清 · ⌥⌘P 工作台 · ⌥⌘Z 撤销", action: nil, keyEquivalent: "")
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
-        menu.addItem(withTitle: "Tidy v\(version) · 开源(MIT)", action: nil, keyEquivalent: "")
-        menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q")
-
-        for item in menu.items { item.target = self }
-        statusItem.menu = menu
+    private func registerActions() {
+        AppActions.capture = { [weak self] in self?.showCapture() }
+        AppActions.archiveFinder = { [weak self] in self?.archiveFromFinder() }
+        AppActions.workbench = { WorkbenchController.shared.toggle() }
+        AppActions.clarify = { ClarifyController.shared.startQueue() }
+        AppActions.undo = { [weak self] in self?.undoLast() }
+        AppActions.endFocus = { FocusManager.shared.requestEnd() }
+        AppActions.review = { ReviewPanelController.shared.present() }
+        AppActions.stats = { WorkbenchController.shared.present(tab: .stats) }
+        AppActions.onboarding = { OnboardingController.shared.present() }
+        AppActions.selfCheck = { [weak self] in self?.showSelfCheck() }
+        AppActions.openMemory = { NSWorkspace.shared.open(MemoryStore.memoryFile) }
+        AppActions.openUser = { NSWorkspace.shared.open(MemoryStore.userFile) }
+        AppActions.openPara = { NSWorkspace.shared.open(ParaTree.root) }
+        AppActions.openEnv = { [weak self] in self?.openEnvSettings() }
+        AppActions.quit = { NSApp.terminate(nil) }
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        let n = AppDatabase.shared.inboxCaptures().count
-        inboxMenuItem.title = n > 0 ? "理清收件箱(\(n) 条待理清)…" : "收件箱:已清空 ✓"
-        focusMenuItem.isHidden = !FocusManager.shared.isActive
-        // 记忆文件被手工编辑过则重新同步(基础层是文本文件,§4.5.1)
-        MemoryStore.shared.syncFromFiles()
-    }
-
-    // MARK: - 悬浮窗 / 快捷键 / 聚焦
+    // MARK: - 灵动岛 / 快捷键 / 聚焦
 
     private func setupIsland() {
         IslandController.shared.onDrop = { urls in
             ArchivePanelController.shared.present(files: urls)
         }
-        if UserDefaults.standard.object(forKey: "islandVisible") as? Bool ?? true {
-            IslandController.shared.show()
-        }
+        IslandController.shared.show()
     }
 
     private func setupHotKeys() {
@@ -126,15 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setupFocusTicker() {
-        // 聚焦倒计时显示在灵动岛;岛隐藏时回落到状态栏
-        FocusManager.shared.onTick = { [weak self] title in
-            if IslandController.shared.isVisible {
-                IslandController.shared.setFocusText(title)
-                self?.statusItem.button?.title = ""
-            } else {
-                IslandController.shared.setFocusText(title)
-                self?.statusItem.button?.title = title.map { " \($0)" } ?? ""
-            }
+        FocusManager.shared.onTick = { title in
+            IslandController.shared.setFocusText(title)
         }
     }
 
@@ -143,28 +93,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             let results = await SelfCheck.run(env: self.env)
             self.selfCheckResults = results
-            self.selfCheckMenuItem.title = SelfCheck.summaryLine(results)
             let failed = results.filter { !$0.ok }
             if !failed.isEmpty {
-                ToastManager.shared.show("⚠️ 自检发现 \(failed.count) 项问题:\(failed.map(\.name).joined(separator: "、"))(状态栏菜单可查看)", duration: 6)
+                ToastManager.shared.show("⚠️ 自检发现 \(failed.count) 项问题:\(failed.map(\.name).joined(separator: "、"))(岛右键菜单 → 自检可查看)", duration: 7)
             }
         }
     }
 
-    // MARK: - 动作
+    // MARK: - 动作实现
 
-    @objc private func archiveFromFinder() {
+    private func archiveFromFinder() {
         switch FinderSelection.fetch() {
         case .files(let files):
             ArchivePanelController.shared.present(files: files)
         case .permissionDenied:
             ToastManager.shared.show("⚠️ 需要「自动化」权限才能读取 Finder 选中项:系统设置 → 隐私与安全性 → 自动化 → Tidy → 勾选 Finder", duration: 9)
         case .scriptError(let msg):
-            ToastManager.shared.show("⚠️ 读取 Finder 选中失败:\(msg)。也可以直接把文件拖到悬浮圆点", duration: 6)
+            ToastManager.shared.show("⚠️ 读取 Finder 选中失败:\(msg)。也可以直接把文件拖到灵动岛", duration: 6)
         }
     }
 
-    @objc private func showCapture() {
+    private func showCapture() {
         let focusName = FocusManager.shared.isActive
             ? AppDatabase.shared.project(byId: FocusManager.shared.activeProjectId!)?.name : nil
         InputPanelController.shared.present(.init(
@@ -186,22 +135,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     try ItemProjectLink(itemId: itemId, projectId: pid, relation: "primary", createdAt: Date()).insert(db)
                 }
             }
-            // 预理清(§4.5.6 prewarm):捕获后立即后台起草,打开理清面板时草稿秒出
+            // 预理清:捕获后立即后台起草;草稿就绪后岛上弹卡片,可直接采纳
             if let client = self.aiClient, let itemId = item.id {
                 let projects = AppDatabase.shared.activeProjects()
+                let captured = item
                 Task { @MainActor in
                     guard let draft = try? await client.clarify(
                         text: text, projectPaths: projects.map(\.path),
                         activeProjectPath: FocusManager.shared.activeProjectPath),
                           let json = try? JSONEncoder().encode(draft),
                           let str = String(data: json, encoding: .utf8) else { return }
-                    try? await AppDatabase.shared.dbQueue.write { db in
+                    let stored: Bool = (try? await AppDatabase.shared.dbQueue.write { db in
                         try db.execute(sql: "UPDATE item SET summary = ? WHERE id = ? AND status = 'inbox'",
                                        arguments: [str, itemId])
-                    }
+                        return db.changesCount > 0
+                    }) ?? false
+                    guard stored else { return }
+                    // 岛事件:AI 草稿就绪,一键采纳(vibeisland 式 agent 通知)
+                    IslandController.shared.present(event: IslandEvent(
+                        icon: "sparkles", color: Theme.violet,
+                        title: draft.isActionable && !draft.nextAction.isEmpty
+                            ? "AI 已理清 → \(draft.nextAction.prefix(24))"
+                            : "AI 已理清:想法,建议\(draft.list == "someday" ? "搁置孵化" : "归档")",
+                        subtitle: captured.title,
+                        actions: [
+                            IslandEvent.Action(label: "采纳", prominent: true) {
+                                ClarifyController.adopt(itemId: itemId, draft: draft)
+                                IslandController.shared.refresh()
+                            },
+                            IslandEvent.Action(label: "细看") {
+                                if let it = try? AppDatabase.shared.dbQueue.read({ d in
+                                    try Item.fetchOne(d, sql: "SELECT * FROM item WHERE id = ?", arguments: [itemId])
+                                }) ?? nil {
+                                    ClarifyController.shared.present(single: it)
+                                }
+                            },
+                        ],
+                        duration: 10, kind: "draft"))
                 }
             }
-            // GTD 两分钟规则:收集时就问,能 2 分钟解决就立即做
+            // GTD 两分钟规则:收集时就问
             var msg = focusName != nil ? "已捕获,关联「\(focusName!)」" : "已捕获"
             if let r = remind { msg += " · ⏰ \(DateMention.format(r)) 提醒" }
             msg += " · 2 分钟能搞定就现在做"
@@ -215,33 +188,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func showWorkbench() { WorkbenchController.shared.toggle() }
-
-    @objc private func undoLast() {
+    private func undoLast() {
         if let msg = Archiver.shared.undoLast() {
             ToastManager.shared.show(msg, duration: 2.5)
+            IslandController.shared.refresh()
         } else {
             ToastManager.shared.show("没有可撤销的归档", duration: 2)
         }
     }
 
-    @objc private func startClarify() { ClarifyController.shared.startQueue() }
-    @objc private func showReview() { ReviewPanelController.shared.present() }
-    @objc private func showOnboarding() { OnboardingController.shared.present() }
-    @objc private func endFocus() { FocusManager.shared.requestEnd() }
-    @objc private func toggleIsland() { IslandController.shared.toggle() }
-
-    @objc private func openInbox() {
-        NSWorkspace.shared.open(ParaTree.root.appendingPathComponent("0-Inbox"))
+    private func openEnvSettings() {
+        EnvConfig.ensureTemplate()
+        NSWorkspace.shared.open(EnvConfig.envFile)
+        ToastManager.shared.show("填好保存后,岛右键 → 自检 即可重新加载配置", duration: 5)
     }
 
-    @objc private func showStats() {
-        WorkbenchController.shared.present(tab: .stats)
-    }
-
-    @objc private func showSelfCheck() {
+    private func showSelfCheck() {
         env = EnvConfig.load()  // 支持改完 .env 直接重跑
         let client = OpenAIClient(config: env)
+        aiClient = client
         ArchivePanelController.shared.aiClient = client
         ClarifyController.shared.aiClient = client
         PlanController.shared.aiClient = client
@@ -249,17 +214,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert(title: "启动自检", text: current.isEmpty ? "运行中…" : SelfCheck.detailText(current))
         runSelfCheck()
     }
-
-    @objc private func openEnvSettings() {
-        EnvConfig.ensureTemplate()
-        NSWorkspace.shared.open(EnvConfig.envFile)
-        ToastManager.shared.show("填好保存后,点菜单里的「自检」即可重新加载配置", duration: 5)
-    }
-
-    @objc private func openMemoryFile() { NSWorkspace.shared.open(MemoryStore.memoryFile) }
-    @objc private func openUserFile() { NSWorkspace.shared.open(MemoryStore.userFile) }
-    @objc private func openPara() { NSWorkspace.shared.open(ParaTree.root) }
-    @objc private func quit() { NSApp.terminate(nil) }
 
     private func alert(title: String, text: String) {
         let a = NSAlert()

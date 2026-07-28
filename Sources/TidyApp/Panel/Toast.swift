@@ -8,7 +8,30 @@ final class ToastManager {
     private var panel: NSPanel?
     private var dismissTask: Task<Void, Never>?
 
+    /// 统一提醒入口:优先投递给灵动岛的事件卡;岛隐藏时回退右上角 toast。
+    /// 所有既有调用点零改动地获得岛化提醒。
     func show(_ message: String, actionTitle: String? = nil, duration: TimeInterval = 3.5, action: (() -> Void)? = nil) {
+        if IslandController.shared.isVisible {
+            let leadsWithEmoji = message.unicodeScalars.first.map {
+                $0.properties.isEmojiPresentation || $0.value >= 0x1F000 || (0x2600...0x27BF).contains($0.value)
+            } ?? false
+            var actions: [IslandEvent.Action] = []
+            if let t = actionTitle, let a = action {
+                actions.append(IslandEvent.Action(label: t, prominent: true, handler: a))
+            }
+            IslandController.shared.present(event: IslandEvent(
+                icon: leadsWithEmoji ? nil : "checkmark.circle.fill",
+                color: Theme.success,
+                title: message,
+                actions: actions,
+                duration: max(duration, actions.isEmpty ? 3.5 : 6)))
+            return
+        }
+        showLegacy(message, actionTitle: actionTitle, duration: duration, action: action)
+    }
+
+    /// 右上角旧样式(岛隐藏期间的兜底)
+    func showLegacy(_ message: String, actionTitle: String? = nil, duration: TimeInterval = 3.5, action: (() -> Void)? = nil) {
         dismissTask?.cancel()
         panel?.orderOut(nil)
 

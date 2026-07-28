@@ -83,11 +83,25 @@ extension View {
     func hoverLift(scale: CGFloat = 1.03) -> some View { modifier(HoverLift(scale: scale)) }
 }
 
-/// 全局动作注册表:让工作台等面板能触发 App 级动作(捕获等)而不耦合 AppDelegate
+/// 全局动作注册表:灵动岛/工作台等触发 App 级动作而不耦合 AppDelegate。
+/// 菜单栏图标已移除,岛的右键菜单是这些动作的主入口。
 @MainActor
 enum AppActions {
     static var capture: () -> Void = {}
     static var archiveFinder: () -> Void = {}
+    static var workbench: () -> Void = {}
+    static var clarify: () -> Void = {}
+    static var undo: () -> Void = {}
+    static var endFocus: () -> Void = {}
+    static var review: () -> Void = {}
+    static var stats: () -> Void = {}
+    static var onboarding: () -> Void = {}
+    static var selfCheck: () -> Void = {}
+    static var openMemory: () -> Void = {}
+    static var openUser: () -> Void = {}
+    static var openPara: () -> Void = {}
+    static var openEnv: () -> Void = {}
+    static var quit: () -> Void = {}
 }
 
 /// 头部图标徽章:彩色圆角小方块内嵌 SF Symbol(飞书式)

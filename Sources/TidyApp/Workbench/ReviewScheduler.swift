@@ -60,10 +60,30 @@ final class ReviewScheduler {
             AppDatabase.shared.markReminded(id)  // 只标记"弹过",逾期红标继续保留在清单里
             Telemetry.record(event: "remind_fired", itemId: id)
             let text = item.nextAction ?? item.title
-            ToastManager.shared.show("⏰ \(text.prefix(30))", actionTitle: "完成", duration: 12) {
-                AppDatabase.shared.markItemDone(id)
-                Telemetry.record(event: "done", itemId: id)
-                ToastManager.shared.show("已完成 ✓", duration: 1.5)
+            let names = AppDatabase.shared.projectNames(forItems: [id])
+            // 岛事件卡:完成 / 推迟 1 小时 双按钮;岛隐藏时回退单按钮 toast
+            if IslandController.shared.isVisible {
+                IslandController.shared.present(event: IslandEvent(
+                    icon: "bell.fill", color: Theme.warning,
+                    title: String(text.prefix(34)),
+                    subtitle: names[id] ?? "时间到了",
+                    actions: [
+                        IslandEvent.Action(label: "完成", prominent: true) {
+                            AppDatabase.shared.markItemDone(id)
+                            Telemetry.record(event: "done", itemId: id)
+                            IslandController.shared.refresh()
+                        },
+                        IslandEvent.Action(label: "推迟 1h") {
+                            AppDatabase.shared.snoozeReminder(id, by: 3600)
+                            IslandController.shared.refresh()
+                        },
+                    ],
+                    duration: 14, kind: "remind"))
+            } else {
+                ToastManager.shared.showLegacy("⏰ \(text.prefix(30))", actionTitle: "完成", duration: 12) {
+                    AppDatabase.shared.markItemDone(id)
+                    Telemetry.record(event: "done", itemId: id)
+                }
             }
         }
     }

@@ -61,8 +61,25 @@ final class FocusManager {
         if remain <= 0 {
             if !boxNotified {
                 boxNotified = true
-                ToastManager.shared.show("⏰ \(a.projectName) 的时间盒到了——结束时记得记一句进展", actionTitle: "结束聚焦") { [weak self] in
-                    self?.requestEnd()
+                // 岛事件卡:时间盒结束,双按钮(结束并记录 / 再来 25 分钟)
+                if IslandController.shared.isVisible {
+                    IslandController.shared.present(event: IslandEvent(
+                        icon: "timer", color: Theme.success,
+                        title: "「\(a.projectName)」时间盒到了",
+                        subtitle: "已专注 \(a.boxMinutes) 分钟",
+                        actions: [
+                            IslandEvent.Action(label: "结束并记录", prominent: true) { [weak self] in
+                                self?.requestEnd()
+                            },
+                            IslandEvent.Action(label: "再来 25 分钟") { [weak self] in
+                                self?.extend(minutes: 25)
+                            },
+                        ],
+                        duration: 15, kind: "timebox"))
+                } else {
+                    ToastManager.shared.showLegacy("⏰ \(a.projectName) 的时间盒到了", actionTitle: "结束聚焦") { [weak self] in
+                        self?.requestEnd()
+                    }
                 }
             }
             onTick?("⏱ +\(formatMMSS(-remain)) \(a.projectName.prefix(6))")
@@ -73,6 +90,17 @@ final class FocusManager {
 
     private func formatMMSS(_ seconds: Int) -> String {
         String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
+    /// 时间盒续期(岛卡片「再来 25 分钟」)
+    func extend(minutes: Int) {
+        guard let a = active else { return }
+        active = Active(projectId: a.projectId, projectName: a.projectName,
+                        projectPath: a.projectPath, sessionId: a.sessionId,
+                        startedAt: a.startedAt, boxMinutes: a.boxMinutes + minutes)
+        boxNotified = false
+        Telemetry.record(event: "focus_extend", itemId: a.projectId)
+        tick()
     }
 
     /// 弹进展输入框再结束(提取记忆的最佳时机,§4.5.11)

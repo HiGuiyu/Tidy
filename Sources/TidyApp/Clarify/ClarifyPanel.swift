@@ -204,6 +204,29 @@ final class ClarifyController {
         panel?.makeKeyAndOrderFront(nil)
     }
 
+    /// 采纳一份 AI 草稿(岛事件卡「采纳」按钮 / 收件箱一键采纳共用)
+    static func adopt(itemId: Int64, draft d: OpenAIClient.ClarifyDraft) {
+        let projects = AppDatabase.shared.activeProjects()
+        let pid = projects.first { $0.path == d.projectPath }?.id
+        var remind: Date? = nil
+        if !d.remindDate.isEmpty {
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd HH:mm"
+            remind = f.date(from: d.remindDate)
+        }
+        AppDatabase.shared.applyClarify(
+            itemId: itemId, isActionable: d.isActionable,
+            nextAction: d.isActionable && !d.nextAction.isEmpty ? d.nextAction : nil,
+            projectId: pid,
+            importance: d.important ? 1 : 0, urgency: d.urgent ? 1 : 0,
+            list: d.isActionable ? d.list : "someday",
+            expectedOutcome: d.expectedOutcome.isEmpty ? nil : d.expectedOutcome,
+            waitingFor: d.list == "waiting" && !d.waitingFor.isEmpty ? d.waitingFor : nil,
+            remindAt: remind)
+        Telemetry.record(event: "clarify_adopt", itemId: itemId,
+                         chosenPath: d.isActionable ? d.list : "someday", usedCloud: true)
+    }
+
     private func finish(cleared: Bool) {
         aiTask?.cancel()
         if let mo = keyMonitor { NSEvent.removeMonitor(mo); keyMonitor = nil }
