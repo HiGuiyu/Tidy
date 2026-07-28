@@ -139,20 +139,29 @@ struct IslandEvent: Identifiable {
 /// 窗口是固定大小的透明画布,岛体只占顶部中央一块——
 /// 岛体之外的区域 hitTest 放行,不遮挡菜单栏/桌面点击。
 final class IslandHostingView: NSHostingView<IslandView> {
-    var coreSize: () -> CGSize = { .zero }
+    /// 按当前模式解析可点区(不依赖测量回传):折叠 = 胶囊区域;展开 = 整张画布
+    var activeRect: (NSRect) -> NSRect = { $0 }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let p = convert(point, from: superview)
-        let s = coreSize()
-        // NSHostingView 是 flipped 坐标(y=0 在顶):岛体钉在顶部中央
-        let y0: CGFloat = isFlipped ? 0 : bounds.height - s.height
-        let rect = NSRect(x: (bounds.width - s.width) / 2, y: y0,
-                          width: s.width, height: s.height)
-        return rect.insetBy(dx: -2, dy: -2).contains(p) ? super.hitTest(point) : nil
+        return activeRect(bounds).contains(p) ? super.hitTest(point) : nil
     }
 
     required init(rootView: IslandView) { super.init(rootView: rootView) }
     @MainActor required dynamic init?(coder: NSCoder) { fatalError("unsupported") }
+}
+
+// MARK: - 音效(8-bit 气质的系统短音,可开关)
+
+@MainActor
+enum SoundFX {
+    static func play(_ name: String) {
+        guard IslandController.shared.model.soundOn else { return }
+        NSSound(named: name)?.play()
+    }
+    static func event() { play("Tink") }      // 事件卡到达
+    static func tap() { play("Pop") }         // 按钮操作
+    static func drop() { play("Bottle") }     // 拖拽入靶
 }
 
 // MARK: - 控制器
@@ -171,7 +180,6 @@ final class IslandController {
     private var eventTask: Task<Void, Never>?
     private var refreshTimer: Timer?
     private var eventQueue: [IslandEvent] = []
-    private(set) var coreSize: CGSize = .zero
 
     var onDrop: (([URL]) -> Void)?
 
@@ -241,10 +249,6 @@ final class IslandController {
         model.refreshCounts()
     }
 
-    func updateCoreSize(_ s: CGSize) {
-        coreSize = s
-    }
-
     private func startRefreshTimer() {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
@@ -268,6 +272,7 @@ final class IslandController {
     private func showEvent(_ e: IslandEvent) {
         model.event = e
         model.eventProgress = 1
+        SoundFX.event()
         setMode(.event)
         Telemetry.record(event: "island_event", chosenPath: e.kind)
         eventTask?.cancel()
@@ -301,6 +306,7 @@ final class IslandController {
 
     func runEventAction(_ action: IslandEvent.Action) {
         Telemetry.record(event: "island_action", chosenPath: action.label)
+        SoundFX.tap()
         action.handler()
         dismissEvent()
     }
@@ -322,7 +328,18 @@ final class IslandController {
                 self?.onDrop?(urls)
             })
         let h = IslandHostingView(rootView: view)
-        h.coreSize = { [weak self] in self?.coreSize ?? .zero }
+        h.activeRect = { [weak self] bounds in
+            guard let self else { return .zero }
+            switch self.model.mode {
+            case .peek, .event, .drop:
+                return bounds        // 展开态整张画布可交互(空白处点击 = 打开工作台)
+            case .collapsed:
+                let w = Self.collapsedWidth + 8
+                let hgt = (Self.notchInset > 0 ? Self.notchInset + 5 : 30) + 6
+                // NSHostingView 是 flipped 坐标,岛体贴顶
+                return NSRect(x: (bounds.width - w) / 2, y: 0, width: w, height: hgt)
+            }
+        }
         let p = KeyablePanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 360),
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
@@ -363,6 +380,7 @@ final class IslandController {
     private func dropTargeted(_ targeted: Bool) {
         hoverTask?.cancel()
         if targeted {
+            SoundFX.drop()
             setMode(.drop)
         } else {
             setMode(model.event != nil ? .event : .collapsed)
@@ -459,7 +477,22 @@ final class IslandModel: ObservableObject {
     @Published var event: IslandEvent? = nil
     @Published var eventProgress: Double = 1
     @Published var queuedEvents = 0      // 排队中的事件卡数(vibeisland 式 +N 角标)
+    @Published var soundOn = UserDefaults.standard.object(forKey: "islandSound") as? Bool ?? true
+    @Published var style = UserDefaults.standard.integer(forKey: "islandStyle")  // 0 素黑 1 颗粒 2 天光
     var eventHovering = false
+
+    func toggleSound() {
+        soundOn.toggle()
+        UserDefaults.standard.set(soundOn, forKey: "islandSound")
+        if soundOn { NSSound(named: "Pop")?.play() }
+    }
+
+    func cycleStyle() {
+        style = (style + 1) % 3
+        UserDefaults.standard.set(style, forKey: "islandStyle")
+    }
+
+    var styleName: String { ["素黑", "颗粒", "天光"][style] }
 
     func refreshCounts() {
         let db = AppDatabase.shared
@@ -503,15 +536,8 @@ struct IslandView: View {
     private var expandedWidth: CGFloat { IslandController.expandedWidth }
 
     var body: some View {
-        core
-            .background(GeometryReader { geo in
-                Color.clear.preference(key: IslandSizeKey.self, value: geo.size)
-            })
-            .onPreferenceChange(IslandSizeKey.self) { size in
-                Task { @MainActor in controller.updateCoreSize(size) }
-            }
-            // 钉在固定画布的顶部中央:变形全程窗口不动,岛体连续生长
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // 钉在固定画布的顶部中央:变形全程窗口不动,岛体连续生长
+        core.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var core: some View {
@@ -529,6 +555,14 @@ struct IslandView: View {
                 .shadow(.drop(color: .black.opacity(model.mode == .collapsed ? 0 : 0.5),
                               radius: 16, y: 7)))
         )
+        .overlay {
+            // 视觉变量层(裁剪进岛形,不拦截交互)
+            Group {
+                if model.style == 1 { GrainOverlay() }
+                else if model.style == 2 { GodRayOverlay() }
+            }
+            .clipShape(islandShape)
+        }
         .overlay {
             if model.mode != .collapsed {
                 islandShape.stroke(Color.white.opacity(0.1), lineWidth: 0.5)
@@ -603,7 +637,7 @@ struct IslandView: View {
                 .clipped()   // 状态信息绝不越过岛体边缘
             }
         }
-        .transition(.opacity)
+        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
     }
 
     /// 左翼:正在做事(聚焦/两分钟)时像素标持续闪动;否则最高优先级状态标
@@ -736,7 +770,7 @@ struct IslandView: View {
                 .frame(width: expandedWidth)
             }
         }
-        .transition(.opacity)
+        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
     }
 
     // MARK: 预览态
@@ -770,25 +804,64 @@ struct IslandView: View {
                         }
                     }
                     let hidden = data.totalOpen - rows.count
-                    HStack(spacing: 8) {
-                        if hidden > 0 {
-                            Text("还有 \(hidden) 条 · 工作台查看")
-                                .font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                    if hidden > 0 || data.inboxCount > 0 {
+                        HStack(spacing: 8) {
+                            if hidden > 0 {
+                                Text("还有 \(hidden) 条 · 工作台查看")
+                                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                            }
+                            if data.inboxCount > 0 {
+                                Text("收件箱 \(data.inboxCount) 待理清")
+                                    .font(.system(size: 10)).foregroundStyle(Theme.warning.opacity(0.85))
+                            }
+                            Spacer()
                         }
-                        if data.inboxCount > 0 {
-                            Text("收件箱 \(data.inboxCount) 待理清")
-                                .font(.system(size: 10)).foregroundStyle(Theme.warning.opacity(0.85))
-                        }
-                        Spacer()
                     }
                 }
             }
+            // 常驻操作条:工作台 / 音效开关 / 质感切换
+            HStack(spacing: 7) {
+                islandPill("square.grid.2x2.fill", "工作台", prominent: true) {
+                    AppActions.workbench()
+                }
+                islandPill(model.soundOn ? "speaker.wave.2.fill" : "speaker.slash.fill",
+                           model.soundOn ? "音效开" : "静音") {
+                    model.toggleSound()
+                }
+                islandPill("sparkles", model.styleName) {
+                    model.cycleStyle()
+                }
+                Spacer()
+                Text("⌥⌘P").font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.3))
+            }
+            .padding(.top, 2)
         }
         .padding(.horizontal, 16)
         .padding(.top, notchInset > 0 ? notchInset + 6 : 12)
         .padding(.bottom, 12)
         .frame(width: expandedWidth, alignment: .leading)
-        .transition(.opacity)
+        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
+    }
+
+    /// 岛内药丸按钮
+    private func islandPill(_ icon: String, _ label: String, prominent: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        Button {
+            SoundFX.tap()
+            action()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 9.5, weight: .semibold))
+                Text(label).font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(.white.opacity(prominent ? 1 : 0.75))
+            .padding(.horizontal, 10).padding(.vertical, 4.5)
+            .background(Capsule().fill(prominent
+                ? AnyShapeStyle(Theme.accent.gradient)
+                : AnyShapeStyle(Color.white.opacity(0.1))))
+        }
+        .buttonStyle(.plain)
     }
 
     /// 预览行:同一项目合并为一行(当前步 + 剩余锁定数);独立行动各占一行。最多 6 条。
@@ -875,7 +948,7 @@ struct IslandView: View {
                                                      Color(red: 0.55, green: 0.35, blue: 0.95)],
                                             startPoint: .leading, endPoint: .trailing))
         )
-        .transition(.opacity)
+        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
     }
 
     private func collectFileURLs(from providers: [NSItemProvider], done: @escaping ([URL]) -> Void) {
@@ -892,10 +965,35 @@ struct IslandView: View {
     }
 }
 
-private struct IslandSizeKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
+// MARK: - 视觉变量(vibeisland 式质感层)
+
+/// 颗粒噪点:确定性伪随机,静态细腻噪纹
+struct GrainOverlay: View {
+    var body: some View {
+        Canvas { ctx, size in
+            var seed: UInt64 = 0x9E3779B97F4A7C15
+            func rnd() -> CGFloat {
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                return CGFloat((seed >> 33) % 1000) / 1000
+            }
+            let count = min(Int(size.width * size.height / 130), 500)
+            for _ in 0..<count {
+                let x = rnd() * size.width
+                let y = rnd() * size.height
+                ctx.fill(Path(CGRect(x: x, y: y, width: 1, height: 1)),
+                         with: .color(.white.opacity(0.04 + 0.05 * rnd())))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// 顶部天光:从上缘洒下的一束微光
+struct GodRayOverlay: View {
+    var body: some View {
+        RadialGradient(colors: [.white.opacity(0.13), .clear],
+                       center: .top, startRadius: 0, endRadius: 190)
+            .allowsHitTesting(false)
     }
 }
 
