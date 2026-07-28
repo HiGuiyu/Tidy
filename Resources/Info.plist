@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>cc.tidy.app</string>
+	<key>CFBundleName</key>
+	<string>TidyApp</string>
+	<key>CFBundleDisplayName</key>
+	<string>Tidy</string>
+	<key>CFBundleExecutable</key>
+	<string>TidyApp</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>需要读取 Finder 当前选中的文件,用于 ⌥⌘A 快速归档。</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>语音记录想法(P2 功能)。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>语音转文字记录想法(P2 功能)。</string>
+</dict>
+</plist>
