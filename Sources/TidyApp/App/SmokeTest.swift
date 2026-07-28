@@ -164,7 +164,38 @@ enum SmokeTest {
             }
         }
 
-        // 11. 埋点可算指标
+        // 11. 待办改提醒 + 项目重命名(目录/DB 同步)
+        do {
+            let db = AppDatabase.shared
+            var it = Item.newCapture(text: "smoke-改提醒", source: "smoke")
+            try? db.dbQueue.write { d in try it.insert(d) }
+            let when = Date().addingTimeInterval(7200)
+            db.setRemind(it.id!, at: when)
+            let fetched = try? db.dbQueue.read { d in
+                try Item.fetchOne(d, sql: "SELECT * FROM item WHERE id = ?", arguments: [it.id])
+            }
+            check("待办设提醒", (fetched ?? nil)?.remindAt != nil && (fetched ?? nil)?.remindedAt == nil)
+            db.setRemind(it.id!, at: nil)
+            let cleared = try? db.dbQueue.read { d in
+                try Item.fetchOne(d, sql: "SELECT * FROM item WHERE id = ?", arguments: [it.id])
+            }
+            check("待办清提醒", (cleared ?? nil)?.remindAt == nil)
+            try? db.dbQueue.write { d in try d.execute(sql: "DELETE FROM item WHERE id = ?", arguments: [it.id]) }
+
+            let dest = try? ParaTree.shared.createDestination(kind: "project", name: "smoke-改名前")
+            if dest != nil, let p = db.project(byPath: "1-Projects/smoke-改名前") {
+                let newPath = ProjectLifecycle.rename(p, to: "smoke-改名后")
+                let dirOK = FileManager.default.fileExists(atPath: ParaTree.root.appendingPathComponent("1-Projects/smoke-改名后").path)
+                let dbOK = db.project(byPath: "1-Projects/smoke-改名后") != nil
+                check("项目重命名同步", newPath == "1-Projects/smoke-改名后" && dirOK && dbOK)
+                try? FileManager.default.removeItem(at: ParaTree.root.appendingPathComponent("1-Projects/smoke-改名后"))
+                try? db.dbQueue.write { d in try d.execute(sql: "DELETE FROM project WHERE path LIKE '1-Projects/smoke-改名%'") }
+            } else {
+                check("项目重命名同步", false, "前置创建失败")
+            }
+        }
+
+        // 12. 埋点可算指标
         Telemetry.record(event: "confirm", suggestedPaths: ["a"], suggestedScores: [0.9], chosenPath: "a", chosenRank: 1, latencyMs: 800)
         let summary = Telemetry.summary()
         check("埋点统计", summary.contains("首选命中率"), summary.components(separatedBy: "\n").first ?? "")

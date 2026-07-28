@@ -369,6 +369,25 @@ final class AppDatabase {
                          suggestedPaths: steps.map(\.action), chosenRank: steps.count)
     }
 
+    /// 给任意待办设置/修改/清除提醒(remindedAt 一并重置,改期后重新生效)
+    func setRemind(_ id: Int64, at date: Date?) {
+        try? dbQueue.write { db in
+            try db.execute(sql: "UPDATE item SET remindAt = ?, remindedAt = NULL, updatedAt = ? WHERE id = ?",
+                           arguments: [date, Date(), id])
+        }
+        Telemetry.record(event: "remind_set", itemId: id, chosenPath: date.map { DateMention.format($0) })
+    }
+
+    /// 应用内新建项目后补充元信息(截止日期/目的)
+    func updateProjectMeta(_ id: Int64, due: Date?, purpose: String?) {
+        try? dbQueue.write { db in
+            try db.execute(sql: """
+                UPDATE project SET dueDate = COALESCE(?, dueDate),
+                       purpose = COALESCE(?, purpose) WHERE id = ?
+                """, arguments: [due, purpose?.isEmpty == true ? nil : purpose, id])
+        }
+    }
+
     /// 项目截止日期(矩阵「紧急」的客观依据)
     func setProjectDue(_ id: Int64, date: Date?) {
         try? dbQueue.write { db in

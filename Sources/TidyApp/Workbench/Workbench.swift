@@ -94,10 +94,15 @@ final class WorkbenchController {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let panel = self.panel, panel.isKeyWindow, let m = self.model else { return event }
             let cmd = event.modifierFlags.contains(.command)
-            // ⌘1-6 切标签页
+            // ⌘1-7 切标签页
             if cmd, let ch = event.charactersIgnoringModifiers, let n = Int(ch),
                (1...Tab.allCases.count).contains(n) {
                 m.tab = Tab.allCases[n - 1]
+                return nil
+            }
+            // ⌘N 新建项目(应用内直接建,不用去 Finder)
+            if cmd, event.keyCode == 45 {
+                NewProjectController.shared.present { [weak m] _ in m?.reload() }
                 return nil
             }
             switch event.keyCode {
@@ -247,6 +252,28 @@ final class WorkbenchModel: ObservableObject {
 
     func project(named name: String) -> Project? {
         all.first { $0.name == name }
+    }
+
+    /// 给任意待办设置/修改/清除提醒
+    func setRemind(_ item: Item, to date: Date?) {
+        guard let id = item.id else { return }
+        AppDatabase.shared.setRemind(id, at: date)
+        reload()
+        if let d = date {
+            ToastManager.shared.show("⏰ 已设提醒:\(DateMention.format(d))", duration: 2)
+        }
+    }
+
+    /// 重命名项目(目录 + DB 同步)
+    func renameProject(_ p: Project, to newName: String) {
+        guard let pid = p.id else { return }
+        if ProjectLifecycle.rename(p, to: newName) != nil {
+            reload()
+            if let updated = AppDatabase.shared.project(byId: pid) { open(project: updated) }
+            ToastManager.shared.show("✓ 已重命名为「\(newName)」,目录已同步", duration: 2.5)
+        } else {
+            ToastManager.shared.show("⚠️ 重命名失败:名称无效或已存在同名目录", duration: 3)
+        }
     }
 
     /// 采纳单条 AI 草稿(一键理清,零表单)
@@ -561,8 +588,8 @@ struct WorkbenchView: View {
                 Text(row.text)
                     .font(.system(size: 14.5, weight: hovering ? .medium : .regular))
                     .lineLimit(1)
-                if let r = row.item.remindAt {
-                    TagChip(text: "⏰ \(DateMention.format(r))", color: r < Date() ? Theme.danger : Theme.warning)
+                RemindChipEditor(remindAt: row.item.remindAt, showPlusWhenEmpty: hovering) { date in
+                    model.setRemind(row.item, to: date)
                 }
                 priorityBadge(row.item)
                 Spacer(minLength: 0)
@@ -758,9 +785,17 @@ struct WorkbenchView: View {
 
     private var projectsSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            sectionHeader("folder.fill", "项目(↑↓ 选择 ↵ 打开)", Theme.teal)
+            HStack {
+                sectionHeader("folder.fill", "项目(↑↓ 选择 ↵ 打开)", Theme.teal)
+                Spacer()
+                Button {
+                    NewProjectController.shared.present { [weak model] _ in model?.reload() }
+                } label: { Label("新建", systemImage: "plus") }
+                    .controlSize(.mini)
+                    .help("应用内直接建项目/领域,目录自动创建并绑定(⌘N)")
+            }
             if model.results.isEmpty {
-                Text("还没有项目。归档文件时可在面板里直接新建")
+                Text("还没有项目。点右上「新建」,或归档文件时在面板里顺手建")
                     .font(Theme.fontSub).foregroundStyle(.tertiary)
             } else {
                 ForEach(Array(model.results.prefix(6).enumerated()), id: \.element.path) { idx, p in
@@ -958,8 +993,8 @@ struct WorkbenchView: View {
                     TagChip(text: "已等 \(days) 天", color: days >= 3 ? Theme.danger : Theme.teal)
                 }
             }
-            if let r = row.item.remindAt {
-                TagChip(text: "⏰ \(DateMention.format(r))", color: r < Date() ? Theme.danger : Theme.warning)
+            RemindChipEditor(remindAt: row.item.remindAt, showPlusWhenEmpty: selected) { date in
+                model.setRemind(row.item, to: date)
             }
             if let name = row.projectName { TagChip(text: name, color: Theme.accent) }
             priorityBadge(row.item)
@@ -1209,7 +1244,18 @@ struct WorkbenchView: View {
     private var searchResults: some View {
         VStack(spacing: 2) {
             if model.results.isEmpty {
-                emptyPage("无匹配项目", "在 1-Projects 下建目录,或归档时在面板里直接新建")
+                VStack(spacing: 10) {
+                    emptyPage("无匹配项目", "可以直接创建:")
+                    Button {
+                        NewProjectController.shared.present(defaultName: model.query) { [weak model] p in
+                            model?.query = ""
+                            model?.reload()
+                            if let p { model?.open(project: p) }
+                        }
+                    } label: { Label("新建项目「\(model.query)」", systemImage: "folder.badge.plus") }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                        .padding(.bottom, 16)
+                }
             } else {
                 ForEach(Array(model.results.prefix(8).enumerated()), id: \.element.path) { idx, p in
                     projectRow(p, selected: idx == model.selectedIndex, index: idx)
@@ -1272,6 +1318,8 @@ struct ProjectDetailView: View {
     @State private var showDuePicker = false
     @State private var dueDraft = Date()
     @State private var showArchiveConfirm = false
+    @State private var showRename = false
+    @State private var renameDraft = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1374,7 +1422,12 @@ struct ProjectDetailView: View {
                     .foregroundStyle(Theme.accent)
             }
             Text(item.nextAction ?? item.title).font(Theme.fontBody)
-            if let r = item.remindAt { TagChip(text: "⏰ \(DateMention.format(r))", color: Theme.warning) }
+            RemindChipEditor(remindAt: item.remindAt, showPlusWhenEmpty: true) { date in
+                if let id = item.id {
+                    AppDatabase.shared.setRemind(id, at: date)
+                    model.reload()
+                }
+            }
             Spacer(minLength: 0)
         }
     }
@@ -1402,6 +1455,35 @@ struct ProjectDetailView: View {
             Button(action: onBack) { Image(systemName: "chevron.left") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
             Text(detail.project.name).font(.system(size: 15, weight: .semibold))
+            Button {
+                renameDraft = detail.project.name
+                showRename = true
+            } label: {
+                Image(systemName: "pencil").font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("重命名项目(目录同步改名)")
+            .popover(isPresented: $showRename, arrowEdge: .bottom) {
+                VStack(spacing: 8) {
+                    Text("重命名项目").font(Theme.fontSub).foregroundStyle(.secondary)
+                    TextField("新名称", text: $renameDraft)
+                        .textFieldStyle(.roundedBorder).font(Theme.fontBody).frame(width: 240)
+                        .onSubmit {
+                            showRename = false
+                            model.renameProject(detail.project, to: renameDraft)
+                        }
+                    HStack {
+                        Text("目录会一并改名").font(Theme.fontMicro).foregroundStyle(.tertiary)
+                        Spacer()
+                        Button("保存") {
+                            showRename = false
+                            model.renameProject(detail.project, to: renameDraft)
+                        }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                    }
+                }
+                .padding(12)
+            }
             Spacer()
             dueBadge
         }

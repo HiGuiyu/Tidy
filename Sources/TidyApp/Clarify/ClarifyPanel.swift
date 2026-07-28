@@ -199,6 +199,11 @@ final class ClarifyController {
         presentCurrent()
     }
 
+    /// 子面板(如新建项目)关闭后把键盘焦点还给理清面板
+    func refocus() {
+        panel?.makeKeyAndOrderFront(nil)
+    }
+
     private func finish(cleared: Bool) {
         aiTask?.cancel()
         if let mo = keyMonitor { NSEvent.removeMonitor(mo); keyMonitor = nil }
@@ -220,7 +225,7 @@ final class ClarifyController {
 @MainActor
 final class ClarifyModel: ObservableObject {
     let item: Item
-    let projects: [Project]
+    @Published var projects: [Project]
     let progress: String?
     let shownAt = Date()
 
@@ -336,8 +341,9 @@ struct ClarifyView: View {
                 .lineLimit(3)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
-            if let r = model.remindAt {
-                TagChip(text: "⏰ \(DateMention.format(r))", color: Theme.warning)
+            RemindChipEditor(remindAt: model.remindAt, showPlusWhenEmpty: true) { date in
+                model.remindAt = date
+                model.noteEdit()
             }
         }
         .padding(10)
@@ -414,6 +420,21 @@ struct ClarifyView: View {
                 }
                 .labelsHidden().frame(maxWidth: 240)
                 .onChange(of: model.selectedProjectId) { _, _ in model.noteEdit() }
+                Button {
+                    // 应用内直接建项目,建完自动选中(不用跳出理清)
+                    NewProjectController.shared.present { created in
+                        model.projects = AppDatabase.shared.activeProjects()
+                        if let p = created {
+                            model.selectedProjectId = p.id
+                            model.noteEdit()
+                        }
+                        ClarifyController.shared.refocus()
+                    }
+                } label: {
+                    Image(systemName: "plus.circle").font(.system(size: 13)).foregroundStyle(Theme.teal)
+                }
+                .buttonStyle(.plain)
+                .help("新建项目并关联")
                 Spacer()
             }
             if model.isActionable {

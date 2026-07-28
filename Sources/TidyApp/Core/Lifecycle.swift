@@ -39,6 +39,37 @@ enum ProjectLifecycle {
         return newPath
     }
 
+    /// 重命名项目:目录与 DB 记录同步改(path 是绑定纽带)。返回新相对路径,失败 nil。
+    @discardableResult
+    static func rename(_ p: Project, to newName: String) -> String? {
+        guard let pid = p.id else { return nil }
+        let clean = newName
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty, clean != p.name else { return nil }
+        let fm = FileManager.default
+        let src = ParaTree.root.appendingPathComponent(p.path)
+        let parentRel = p.path.components(separatedBy: "/").dropLast().joined(separator: "/")
+        let dest = ParaTree.root.appendingPathComponent(parentRel).appendingPathComponent(clean)
+        guard !fm.fileExists(atPath: dest.path) else { return nil }
+        if fm.fileExists(atPath: src.path) {
+            do { try fm.moveItem(at: src, to: dest) } catch { return nil }
+        } else {
+            try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        }
+        let newPath = parentRel.isEmpty ? clean : "\(parentRel)/\(clean)"
+        try? AppDatabase.shared.dbQueue.write { db in
+            try db.execute(sql: "UPDATE project SET name = ?, path = ? WHERE id = ?",
+                           arguments: [clean, newPath, pid])
+        }
+        AppDatabase.shared.logAction("rename", itemId: nil, from: src.path, to: dest.path)
+        Telemetry.record(event: "project_renamed", itemId: pid, chosenPath: newPath)
+        MemoryStore.shared.recordEpisodic("\(Archiver.dateStr()) 项目「\(p.name)」重命名为「\(clean)」")
+        ParaTree.shared.scan()
+        return newPath
+    }
+
     static func pause(_ p: Project) {
         guard let pid = p.id else { return }
         try? AppDatabase.shared.dbQueue.write { db in
