@@ -204,6 +204,7 @@ final class WorkbenchModel: ObservableObject {
         var captures: [Item]
         var recentFiles: [(url: URL, mtime: Date)]
         var dirURL: URL
+        var relCounts: [String: Int] = [:]   // 文件路径 → 关联文档数(🔗 角标)
     }
 
     func reload() {
@@ -370,12 +371,14 @@ final class WorkbenchModel: ObservableObject {
     func open(project: Project) {
         guard let pid = project.id else { return }
         let dir = ParaTree.root.appendingPathComponent(project.path)
+        let recent = ParaTree.recentFiles(in: dir, limit: 5)
         detail = ProjectDetail(
             project: AppDatabase.shared.project(byId: pid) ?? project,
             nextActions: AppDatabase.shared.nextActions(projectId: pid, limit: 6),
             captures: AppDatabase.shared.unprocessedCaptures(projectId: pid),
-            recentFiles: ParaTree.recentFiles(in: dir, limit: 5),
-            dirURL: dir)
+            recentFiles: recent,
+            dirURL: dir,
+            relCounts: AppDatabase.shared.relationCounts(for: recent.map(\.url.path)))
     }
 }
 
@@ -1308,6 +1311,14 @@ struct ProjectDetailView: View {
     @State private var showArchiveConfirm = false
     @State private var showRename = false
     @State private var renameDraft = ""
+    @State private var relTarget: RelTarget?
+
+    struct RelTarget: Identifiable { let id: String }
+
+    private func relPopoverBinding(for path: String) -> Binding<RelTarget?> {
+        Binding(get: { relTarget?.id == path ? relTarget : nil },
+                set: { if $0 == nil { relTarget = nil } })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1342,21 +1353,36 @@ struct ProjectDetailView: View {
                             emptyHint("目录还是空的")
                         } else {
                             ForEach(detail.recentFiles, id: \.url) { f in
-                                Button {
-                                    NSWorkspace.shared.open(f.url)
-                                } label: {
-                                    HStack {
-                                        Image(nsImage: NSWorkspace.shared.icon(forFile: f.url.path))
-                                            .resizable().frame(width: 15, height: 15)
-                                        Text(f.url.lastPathComponent)
-                                            .font(Theme.fontBody).lineLimit(1).truncationMode(.middle)
-                                        Spacer()
-                                        Text(WorkbenchView.relative(f.mtime))
-                                            .font(Theme.fontCaption).foregroundStyle(.tertiary)
+                                HStack {
+                                    Button {
+                                        NSWorkspace.shared.open(f.url)
+                                    } label: {
+                                        HStack {
+                                            Image(nsImage: NSWorkspace.shared.icon(forFile: f.url.path))
+                                                .resizable().frame(width: 15, height: 15)
+                                            Text(f.url.lastPathComponent)
+                                                .font(Theme.fontBody).lineLimit(1).truncationMode(.middle)
+                                        }
+                                        .contentShape(Rectangle())
                                     }
-                                    .contentShape(Rectangle())
+                                    .buttonStyle(.plain)
+                                    // 🔗 关联文档角标:点开看关联清单(Finder 选中多文件 → 岛右键「关联」建立)
+                                    if let c = detail.relCounts[f.url.path], c > 0 {
+                                        Button {
+                                            relTarget = RelTarget(id: f.url.path)
+                                        } label: {
+                                            TagChip(text: "🔗\(c)", color: Theme.teal)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("查看关联文档")
+                                        .popover(item: relPopoverBinding(for: f.url.path)) { t in
+                                            RelatedDocsList(path: t.id)
+                                        }
+                                    }
+                                    Spacer()
+                                    Text(WorkbenchView.relative(f.mtime))
+                                        .font(Theme.fontCaption).foregroundStyle(.tertiary)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -1578,5 +1604,44 @@ struct ProjectDetailView: View {
 
     private func emptyHint(_ text: String) -> some View {
         Text(text).font(Theme.fontSub).foregroundStyle(.tertiary)
+    }
+}
+
+/// 关联文档清单弹层:点击打开,右键在 Finder 显示
+struct RelatedDocsList: View {
+    let path: String
+
+    var body: some View {
+        let related = AppDatabase.shared.relatedDocs(of: path)
+        VStack(alignment: .leading, spacing: 6) {
+            Label("关联文档", systemImage: "link")
+                .font(Theme.fontSub).foregroundStyle(Theme.teal)
+            if related.isEmpty {
+                Text("暂无").font(Theme.fontCaption).foregroundStyle(.tertiary)
+            }
+            ForEach(related, id: \.self) { p in
+                Button {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: p))
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: p))
+                            .resizable().frame(width: 14, height: 14)
+                        Text((p as NSString).lastPathComponent)
+                            .font(Theme.fontSub).lineLimit(1).truncationMode(.middle)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button("在 Finder 中显示") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
+                    }
+                }
+            }
+            Text("建立关联:Finder 选中多个文件 → 岛右键「关联」")
+                .font(Theme.fontMicro).foregroundStyle(.tertiary)
+        }
+        .padding(12)
+        .frame(width: 280, alignment: .leading)
     }
 }

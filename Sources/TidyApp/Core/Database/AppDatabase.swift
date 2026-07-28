@@ -153,6 +153,18 @@ final class AppDatabase {
                 t.add(column: "remindedAt", .datetime)
             }
         }
+        migrator.registerMigration("v4-docRelation") { db in
+            // 文档关系(简单版):无向的成对关联,path 为键
+            try db.create(table: "docRelation") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("aPath", .text).notNull()
+                t.column("bPath", .text).notNull()
+                t.column("note", .text)
+                t.column("createdAt", .datetime).notNull()
+            }
+            try db.create(index: "docRelation_a", on: "docRelation", columns: ["aPath"])
+            try db.create(index: "docRelation_b", on: "docRelation", columns: ["bPath"])
+        }
         return migrator
     }
 
@@ -419,6 +431,52 @@ final class AppDatabase {
         }) ?? []
     }
 
+    // MARK: - 文档关系(v1:成对无向关联)
+
+    /// 把一组文档两两关联(去重),返回新增的关系数
+    @discardableResult
+    func linkDocs(_ paths: [String]) -> Int {
+        let unique = Array(Set(paths)).sorted()
+        guard unique.count >= 2 else { return 0 }
+        var added = 0
+        try? dbQueue.write { db in
+            for i in 0..<unique.count {
+                for j in (i + 1)..<unique.count {
+                    let (a, b) = (unique[i], unique[j])
+                    let exists = try Bool.fetchOne(db, sql: """
+                        SELECT EXISTS(SELECT 1 FROM docRelation WHERE aPath = ? AND bPath = ?)
+                        """, arguments: [a, b]) ?? false
+                    if !exists {
+                        try db.execute(sql: "INSERT INTO docRelation (aPath, bPath, createdAt) VALUES (?, ?, ?)",
+                                       arguments: [a, b, Date()])
+                        added += 1
+                    }
+                }
+            }
+        }
+        if added > 0 { Telemetry.record(event: "docs_linked", chosenRank: added) }
+        return added
+    }
+
+    /// 某文档的全部关联文档路径
+    func relatedDocs(of path: String) -> [String] {
+        (try? dbQueue.read { db in
+            let a = try String.fetchAll(db, sql: "SELECT bPath FROM docRelation WHERE aPath = ?", arguments: [path])
+            let b = try String.fetchAll(db, sql: "SELECT aPath FROM docRelation WHERE bPath = ?", arguments: [path])
+            return Array(Set(a + b)).sorted()
+        }) ?? []
+    }
+
+    /// 批量取关联数(工作台文件行的 🔗 角标)
+    func relationCounts(for paths: [String]) -> [String: Int] {
+        var map: [String: Int] = [:]
+        for p in paths {
+            let c = relatedDocs(of: p).count
+            if c > 0 { map[p] = c }
+        }
+        return map
+    }
+
     // MARK: - 提醒 / 复盘
 
     /// 到点且尚未弹过的提醒
@@ -455,6 +513,7 @@ final class AppDatabase {
         var someday = 0
         var waiting = 0
         var overdue = 0
+        var twoMin = 0    // ⚡ 两分钟即办:只留记录,供复盘/总结
     }
 
     func weekStats() -> WeekStats {
@@ -468,6 +527,7 @@ final class AppDatabase {
             s.someday = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE status='clarified' AND gtdList='someday'") ?? 0
             s.waiting = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE status='clarified' AND gtdList='waiting'") ?? 0
             s.overdue = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE remindAt < ? AND status IN ('inbox','clarified')", arguments: [Date()]) ?? 0
+            s.twoMin = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM telemetry WHERE event = 'two_min_done' AND createdAt >= ?", arguments: [since]) ?? 0
         }
         return s
     }

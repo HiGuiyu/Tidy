@@ -195,7 +195,22 @@ enum SmokeTest {
             }
         }
 
-        // 12. 埋点可算指标
+        // 12. 文档关系 v1:两两关联 + 查询
+        do {
+            let db = AppDatabase.shared
+            let a = "/tmp/smoke-docA.md", b = "/tmp/smoke-docB.md", c = "/tmp/smoke-docC.md"
+            let added = db.linkDocs([a, b, c])
+            check("文档两两关联", added == 3, "新增 \(added) 组")
+            let rel = db.relatedDocs(of: a)
+            check("关联查询", rel.contains(b) && rel.contains(c) && rel.count == 2)
+            let again = db.linkDocs([a, b])
+            check("重复关联去重", again == 0)
+            try? db.dbQueue.write { d in
+                try d.execute(sql: "DELETE FROM docRelation WHERE aPath LIKE '/tmp/smoke-%'")
+            }
+        }
+
+        // 13. 埋点可算指标
         Telemetry.record(event: "confirm", suggestedPaths: ["a"], suggestedScores: [0.9], chosenPath: "a", chosenRank: 1, latencyMs: 800)
         let summary = Telemetry.summary()
         check("埋点统计", summary.contains("首选命中率"), summary.components(separatedBy: "\n").first ?? "")

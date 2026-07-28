@@ -410,12 +410,20 @@ final class TwoMinuteTimer {
 
     var isActive: Bool { timer != nil }
 
+    func isRunning(for id: Int64) -> Bool { timer != nil && itemId == id }
+
     func start(itemId: Int64, title: String) {
         cancel()
         self.itemId = itemId
         self.title = title
         remaining = 120
         Telemetry.record(event: "two_min_start", itemId: itemId)
+        // 两分钟内的事移出常规流程:不进收件箱、不进清单、不弹草稿卡
+        try? AppDatabase.shared.dbQueue.write { db in
+            try db.execute(sql: "UPDATE item SET status = 'clarified', gtdList = 'doing', updatedAt = ? WHERE id = ?",
+                           arguments: [Date(), itemId])
+        }
+        IslandController.shared.refresh()
         IslandController.shared.model.twoMinText = "2:00"
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             Task { @MainActor in TwoMinuteTimer.shared.tick() }
@@ -441,13 +449,21 @@ final class TwoMinuteTimer {
             title: "2 分钟到——搞定了吗?",
             subtitle: String(t.prefix(30)),
             actions: [
+                // 搞定 = 只留一条记录供周复盘/总结,不进任何后续流程
                 IslandEvent.Action(label: "搞定 ✓", prominent: true) {
                     AppDatabase.shared.markItemDone(id)
                     Telemetry.record(event: "two_min_done", itemId: id)
+                    MemoryStore.shared.recordEpisodic("\(Archiver.dateStr()) ⚡ 两分钟即办:\(t.prefix(40))")
                     IslandController.shared.refresh()
                 },
-                IslandEvent.Action(label: "还没,留着") {
+                // 没搞定 = 这才进入正常流程(回收件箱,已有 AI 草稿的直接可采纳)
+                IslandEvent.Action(label: "没搞定,进待办") {
                     Telemetry.record(event: "two_min_giveup", itemId: id)
+                    try? AppDatabase.shared.dbQueue.write { db in
+                        try db.execute(sql: "UPDATE item SET status = 'inbox', gtdList = NULL, updatedAt = ? WHERE id = ?",
+                                       arguments: [Date(), id])
+                    }
+                    IslandController.shared.refresh()
                 },
             ],
             duration: 25, kind: "two_min"))
@@ -602,7 +618,16 @@ struct IslandView: View {
         Button("每周复盘…") { AppActions.review() }
         Button("统计") { AppActions.stats() }
         Button("新手指引(GTD 心法)") { AppActions.onboarding() }
+        Button("关联 Finder 选中的文档…") { AppActions.linkDocs() }
         Divider()
+        Menu("质感:\(model.styleName)") {
+            ForEach(0..<3, id: \.self) { i in
+                Button(["素黑", "颗粒", "天光"][i]) {
+                    model.style = i
+                    UserDefaults.standard.set(i, forKey: "islandStyle")
+                }
+            }
+        }
         Menu("设置与文件") {
             Button("AI 设置(.env)…") { AppActions.openEnv() }
             Button("编辑 MEMORY.md(归档规则)") { AppActions.openMemory() }
@@ -637,7 +662,7 @@ struct IslandView: View {
                 .clipped()   // 状态信息绝不越过岛体边缘
             }
         }
-        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
+        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
     }
 
     /// 左翼:正在做事(聚焦/两分钟)时像素标持续闪动;否则最高优先级状态标
@@ -770,25 +795,100 @@ struct IslandView: View {
                 .frame(width: expandedWidth)
             }
         }
-        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
+        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
     }
 
     // MARK: 预览态
 
     private var peekView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                leftWing
-                Text(model.statusLine.isEmpty ? "全部清空,心如止水 🧘" : model.statusLine)
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
-                Spacer()
-                if let d = model.preview, d.doneToday > 0 {
-                    Text("今日 ✓\(d.doneToday)")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Theme.success.opacity(0.9))
+        VStack(alignment: .leading, spacing: 7) {
+            peekHeader
+            peekBody
+        }
+        .padding(.bottom, 10)
+        .frame(width: expandedWidth, alignment: .leading)
+        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
+    }
+
+    /// 头部利用刘海两侧的横带(紧贴上边缘,不浪费空间):
+    /// 左侧状态,右侧纯图标按钮(工作台/音效)
+    private var peekHeader: some View {
+        Group {
+            if notchWidth > 0 {
+                let side = max(60, (expandedWidth - notchWidth) / 2)
+                HStack(spacing: 0) {
+                    HStack(spacing: 6) {
+                        leftWing
+                        Text(model.statusLine.isEmpty ? "心如止水 🧘" : model.statusLine)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.leading, 14)
+                    .frame(width: side, alignment: .leading)
+                    Color.clear.frame(width: notchWidth)
+                    HStack(spacing: 12) {
+                        Spacer(minLength: 0)
+                        if let d = model.preview, d.doneToday > 0 {
+                            Text("✓\(d.doneToday)")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Theme.success.opacity(0.9))
+                        }
+                        headerIcons
+                    }
+                    .padding(.trailing, 14)
+                    .frame(width: side, alignment: .trailing)
                 }
-                Text("点击开工作台").font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
+                .frame(height: collapsedHeight)
+            } else {
+                HStack(spacing: 8) {
+                    leftWing
+                    Text(model.statusLine.isEmpty ? "心如止水 🧘" : model.statusLine)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+                    Spacer()
+                    if let d = model.preview, d.doneToday > 0 {
+                        Text("✓\(d.doneToday)")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Theme.success.opacity(0.9))
+                    }
+                    headerIcons
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 28)
+                .padding(.top, 2)
             }
+        }
+    }
+
+    /// 右上角纯图标:工作台 / 音效开关
+    private var headerIcons: some View {
+        HStack(spacing: 11) {
+            Button {
+                SoundFX.tap()
+                AppActions.workbench()
+            } label: {
+                Image(systemName: "square.grid.2x2.fill")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+            }
+            .buttonStyle(.plain)
+            .help("打开工作台(⌥⌘P)")
+            Button {
+                model.toggleSound()
+            } label: {
+                Image(systemName: model.soundOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(model.soundOn ? 0.8 : 0.4))
+            }
+            .buttonStyle(.plain)
+            .help(model.soundOn ? "关闭音效" : "打开音效")
+        }
+    }
+
+    @ViewBuilder
+    private var peekBody: some View {
+        Group {
             if let data = model.preview {
                 let rows = peekRows(data)
                 if rows.isEmpty {
@@ -819,49 +919,8 @@ struct IslandView: View {
                     }
                 }
             }
-            // 常驻操作条:工作台 / 音效开关 / 质感切换
-            HStack(spacing: 7) {
-                islandPill("square.grid.2x2.fill", "工作台", prominent: true) {
-                    AppActions.workbench()
-                }
-                islandPill(model.soundOn ? "speaker.wave.2.fill" : "speaker.slash.fill",
-                           model.soundOn ? "音效开" : "静音") {
-                    model.toggleSound()
-                }
-                islandPill("sparkles", model.styleName) {
-                    model.cycleStyle()
-                }
-                Spacer()
-                Text("⌥⌘P").font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.3))
-            }
-            .padding(.top, 2)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, notchInset > 0 ? notchInset + 6 : 12)
-        .padding(.bottom, 12)
-        .frame(width: expandedWidth, alignment: .leading)
-        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
-    }
-
-    /// 岛内药丸按钮
-    private func islandPill(_ icon: String, _ label: String, prominent: Bool = false,
-                            action: @escaping () -> Void) -> some View {
-        Button {
-            SoundFX.tap()
-            action()
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 9.5, weight: .semibold))
-                Text(label).font(.system(size: 10, weight: .semibold))
-            }
-            .foregroundStyle(.white.opacity(prominent ? 1 : 0.75))
-            .padding(.horizontal, 10).padding(.vertical, 4.5)
-            .background(Capsule().fill(prominent
-                ? AnyShapeStyle(Theme.accent.gradient)
-                : AnyShapeStyle(Color.white.opacity(0.1))))
-        }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
     }
 
     /// 预览行:同一项目合并为一行(当前步 + 剩余锁定数);独立行动各占一行。最多 6 条。
@@ -948,7 +1007,7 @@ struct IslandView: View {
                                                      Color(red: 0.55, green: 0.35, blue: 0.95)],
                                             startPoint: .leading, endPoint: .trailing))
         )
-        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity))
+        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
     }
 
     private func collectFileURLs(from providers: [NSItemProvider], done: @escaping ([URL]) -> Void) {

@@ -61,7 +61,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppActions.openUser = { NSWorkspace.shared.open(MemoryStore.userFile) }
         AppActions.openPara = { NSWorkspace.shared.open(ParaTree.root) }
         AppActions.openEnv = { [weak self] in self?.openEnvSettings() }
+        AppActions.linkDocs = { Self.linkFinderSelection() }
         AppActions.quit = { NSApp.terminate(nil) }
+
+        // 恢复:上次退出时还在"两分钟即办"里的条目放回收件箱,不留 limbo
+        try? AppDatabase.shared.dbQueue.write { db in
+            try db.execute(sql: "UPDATE item SET status = 'inbox', gtdList = NULL WHERE gtdList = 'doing'")
+        }
     }
 
     // MARK: - 灵动岛 / 快捷键 / 聚焦
@@ -151,6 +157,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         return db.changesCount > 0
                     }) ?? false
                     guard stored else { return }
+                    // 两分钟即办进行中:这条不进后续流程,不弹草稿卡(草稿留库备用)
+                    guard !TwoMinuteTimer.shared.isRunning(for: itemId) else { return }
                     // 岛事件:AI 草稿就绪,一键采纳。项目在前,内容在后
                     let projLeaf = draft.projectPath.components(separatedBy: "/").last
                     let draftTitle: String
@@ -199,6 +207,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             IslandController.shared.refresh()
         } else {
             ToastManager.shared.show("没有可撤销的归档", duration: 2)
+        }
+    }
+
+    /// 文档关联 v1:Finder 选中 ≥2 个文件 → 两两建立关系
+    private static func linkFinderSelection() {
+        switch FinderSelection.fetch() {
+        case .files(let urls) where urls.count >= 2:
+            let added = AppDatabase.shared.linkDocs(urls.map(\.path))
+            let names = urls.prefix(2).map { $0.lastPathComponent }.joined(separator: "、")
+            MemoryStore.shared.recordEpisodic("\(Archiver.dateStr()) 关联文档:\(names) 等 \(urls.count) 个")
+            ToastManager.shared.show("🔗 已关联 \(urls.count) 个文档(新增 \(added) 组关系),工作台文件行可见", duration: 4)
+        case .files:
+            ToastManager.shared.show("🔗 请在 Finder 同时选中 2 个以上文档,再点「关联」", duration: 4)
+        case .permissionDenied:
+            ToastManager.shared.show("⚠️ 需要「自动化」权限:系统设置 → 隐私与安全性 → 自动化 → Tidy → Finder", duration: 8)
+        case .scriptError(let msg):
+            ToastManager.shared.show("⚠️ 读取选中失败:\(msg)", duration: 5)
         }
     }
 

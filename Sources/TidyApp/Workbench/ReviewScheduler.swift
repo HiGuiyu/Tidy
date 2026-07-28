@@ -245,6 +245,10 @@ private struct ReviewView: View {
                 statBox("\(stats.archived)", "归档文件", Theme.violet)
                 statBox("\(stats.overdue)", "已过提醒", stats.overdue > 0 ? Theme.danger : .secondary)
             }
+            if stats.twoMin > 0 {
+                Text("⚡ 其中 \(stats.twoMin) 件是「两分钟即办」——小事不过夜,没有进入任何清单")
+                    .font(Theme.fontCaption).foregroundStyle(Theme.warning)
+            }
             if !done.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("本周完成的事").font(Theme.fontSub).foregroundStyle(Theme.success)

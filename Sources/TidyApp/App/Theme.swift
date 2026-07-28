@@ -101,6 +101,7 @@ enum AppActions {
     static var openUser: () -> Void = {}
     static var openPara: () -> Void = {}
     static var openEnv: () -> Void = {}
+    static var linkDocs: () -> Void = {}
     static var quit: () -> Void = {}
 }
 
