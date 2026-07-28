@@ -448,11 +448,13 @@ final class IslandController {
         }
     }
 
+    /// 全岛唯一的形变弹簧:身体、内容过渡共用同一条曲线,保证完全同步
+    static let morph = Animation.spring(response: 0.45, dampingFraction: 0.8)
+
     private func setMode(_ mode: IslandModel.Mode) {
         guard model.mode != mode else { return }
         if mode != .peek { model.preview = nil }
-        // 单一弹簧驱动整块岛体连续变形——慢一点,带自然回弹
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.76)) {
+        withAnimation(Self.morph) {
             model.mode = mode
         }
     }
@@ -502,6 +504,10 @@ final class IslandMenuBridge: NSObject {
         let styleItem = NSMenuItem(title: "质感", action: nil, keyEquivalent: "")
         m.addItem(styleItem)
         m.setSubmenu(styleMenu, for: styleItem)
+        let dyn = NSMenuItem(title: "动态图标", action: #selector(toggleDyn), keyEquivalent: "")
+        dyn.target = self
+        dyn.state = IslandController.shared.model.dynamicIcons ? .on : .off
+        m.addItem(dyn)
         let stretch = NSMenuItem(title: "久坐提醒(每 50 分钟)",
                                  action: #selector(toggleStretch), keyEquivalent: "")
         stretch.target = self
@@ -530,6 +536,9 @@ final class IslandMenuBridge: NSObject {
     @objc private func selfCheck() { AppActions.selfCheck() }
     @objc private func hideIsland() { IslandController.shared.hideTemporarily() }
     @objc private func quit() { AppActions.quit() }
+    @objc private func toggleDyn() {
+        IslandController.shared.model.toggleDynamicIcons()
+    }
     @objc private func toggleStretch() {
         ReviewScheduler.shared.stretchOn.toggle()
     }
@@ -637,6 +646,12 @@ final class IslandModel: ObservableObject {
     @Published var queuedEvents = 0      // 排队中的事件卡数(vibeisland 式 +N 角标)
     @Published var soundOn = UserDefaults.standard.object(forKey: "islandSound") as? Bool ?? true
     @Published var style = UserDefaults.standard.integer(forKey: "islandStyle")  // 0 素黑 1 颗粒 2 天光
+    @Published var dynamicIcons = UserDefaults.standard.object(forKey: "dynIcons") as? Bool ?? true
+
+    func toggleDynamicIcons() {
+        dynamicIcons.toggle()
+        UserDefaults.standard.set(dynamicIcons, forKey: "dynIcons")
+    }
     var eventHovering = false
 
     func toggleSound() {
@@ -804,7 +819,7 @@ struct IslandView: View {
                 .clipped()   // 状态信息绝不越过岛体边缘
             }
         }
-        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
+        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity).animation(IslandController.morph))
     }
 
     /// 左翼:正在做事(聚焦/两分钟)时像素标持续闪动;否则最高优先级状态标
@@ -845,22 +860,38 @@ struct IslandView: View {
         }
     }
 
-    /// 紧凑指示灯:窄翼里放最高优先级一盏 + 溢出点,保证绝不超出岛缘
+    /// 紧凑指示灯:窄翼空间用"时分复用"——每 3.5 秒轮播一个维度,
+    /// 小空间也能看全所有状态(状态栏式的常态信息提示)
     private var compactIndicators: some View {
         var lights: [(pattern: [String], color: Color, count: Int)] = []
         if model.overdue > 0 { lights.append((Pixel.bell, Theme.danger, model.overdue)) }
         if model.inboxCount > 0 { lights.append((Pixel.tray, Theme.warning, model.inboxCount)) }
         if model.actionCount > 0 { lights.append((Pixel.bolt, Color(red: 0.42, green: 0.62, blue: 1.0), model.actionCount)) }
-        return HStack(spacing: 4) {
-            if let l = lights.first {
-                PixelGlyph(pattern: l.pattern, color: l.color, pixel: 1.6)
-                Text(l.count > 99 ? "99" : "\(l.count)")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(l.color.opacity(0.95))
-                    .lineLimit(1)
-            }
-            if lights.count > 1 {
-                Circle().fill(Color.white.opacity(0.4)).frame(width: 3, height: 3)
+        return TimelineView(.periodic(from: .now, by: 3.5)) { tl in
+            if lights.isEmpty {
+                Circle().fill(Color.white.opacity(0.28)).frame(width: 4, height: 4)
+            } else {
+                let idx = Int(tl.date.timeIntervalSinceReferenceDate / 3.5) % lights.count
+                let l = lights[idx]
+                HStack(spacing: 4) {
+                    PixelGlyph(pattern: l.pattern, color: l.color, pixel: 1.6)
+                    Text(l.count > 99 ? "99" : "\(l.count)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(l.color.opacity(0.95))
+                        .lineLimit(1)
+                    if lights.count > 1 {
+                        // 轮播位置点:几盏灯、现在是第几盏
+                        HStack(spacing: 1.5) {
+                            ForEach(0..<lights.count, id: \.self) { i in
+                                Circle().fill(Color.white.opacity(i == idx ? 0.6 : 0.2))
+                                    .frame(width: 2.5, height: 2.5)
+                            }
+                        }
+                    }
+                }
+                .id(idx)
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.3), value: idx)
             }
         }
     }
@@ -937,7 +968,7 @@ struct IslandView: View {
                 .frame(width: expandedWidth)
             }
         }
-        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
+        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity).animation(IslandController.morph))
     }
 
     // MARK: 预览态
@@ -947,9 +978,9 @@ struct IslandView: View {
             peekHeader
             peekBody
         }
-        .padding(.bottom, 10)
+        .padding(.bottom, 14)
         .frame(width: expandedWidth, alignment: .leading)
-        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
+        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity).animation(IslandController.morph))
     }
 
     /// 顶带(vibeisland 式):左 = 像素 Logo + 彩色数字统计;右 = ✓今日 + 喇叭 + 齿轮。
@@ -960,11 +991,11 @@ struct IslandView: View {
                 let side = max(60, (expandedWidth - notchWidth) / 2)
                 HStack(spacing: 0) {
                     headerStats
-                        .padding(.leading, 16)
+                        .padding(.leading, 20)
                         .frame(width: side, alignment: .leading)
                     Color.clear.frame(width: notchWidth)
                     headerControls
-                        .padding(.trailing, 16)
+                        .padding(.trailing, 20)
                         .frame(width: side, alignment: .trailing)
                 }
                 .frame(height: collapsedHeight)
@@ -1084,7 +1115,7 @@ struct IslandView: View {
                         .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.6))
                         .padding(.vertical, 4)
                 } else {
-                    VStack(spacing: 5) {
+                    VStack(spacing: 7) {
                         ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                             taskCard(row)
                         }
@@ -1106,86 +1137,139 @@ struct IslandView: View {
                 }
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 20)   // 文字与岛缘之间留足呼吸
     }
 
-    /// 预览行:同一项目合并为一行(当前步 + 剩余锁定数);独立行动各占一行。最多 6 条。
+    /// 预览行:同一项目合并;主行 = 图标+白题+灰说明,子行 = 列出后续步骤。
     private struct PeekRow {
+        struct Step {
+            var text: String
+            var remindAt: Date?
+        }
         var project: String?
-        var text: String
-        var secondary: String
+        var text: String          // 白色题目(项目名或行动)
+        var detail: String        // 灰色说明(当前步/期望结果)
         var remindAt: Date?
-        var lockedCount: Int
+        var quadrant: Int         // 0 急重 1 重要 2 紧急 3 其余
         var doneSteps = 0
-        var totalAll = 0       // 链条全长(含已完成),电量条用
+        var totalAll = 0
+        var subSteps: [Step] = [] // 多步骤任务:把步骤列出来
+        var active = false        // 正在聚焦的项目 → 动态图标
         var overdue: Bool { remindAt.map { $0 < Date() } ?? false }
     }
 
+    private func quadrantOf(_ it: Item) -> Int {
+        let imp = (it.importance ?? 0) >= 1, urg = (it.urgency ?? 0) >= 1
+        switch (imp, urg) {
+        case (true, true): return 0
+        case (true, false): return 1
+        case (false, true): return 2
+        case (false, false): return 3
+        }
+    }
+
     private func peekRows(_ data: TodoPreviewData) -> [PeekRow] {
+        let focusLeaf = FocusManager.shared.activeProjectPath?.components(separatedBy: "/").last
         var rows: [PeekRow] = []
         for chain in data.chains {
             guard let first = chain.steps.first else { continue }
-            let locked = max(0, chain.totalSteps - 1)
-            let sec = (first.expectedOutcome?.isEmpty == false ? "→ \(first.expectedOutcome!)" : nil)
-                ?? (locked > 0 ? "完成这步自动解锁后面 \(locked) 步" : "项目当前唯一在做的一步")
             rows.append(PeekRow(project: chain.projectName,
-                                text: first.nextAction ?? first.title,
-                                secondary: sec,
+                                text: chain.projectName,
+                                detail: first.nextAction ?? first.title,
                                 remindAt: first.remindAt,
-                                lockedCount: locked,
+                                quadrant: quadrantOf(first),
                                 doneSteps: chain.doneSteps,
-                                totalAll: chain.doneSteps + chain.totalSteps))
+                                totalAll: chain.doneSteps + chain.totalSteps,
+                                subSteps: chain.steps.dropFirst().map {
+                                    PeekRow.Step(text: $0.nextAction ?? $0.title, remindAt: $0.remindAt)
+                                },
+                                active: chain.projectName == focusLeaf))
         }
         for it in data.loose {
-            let sec = (it.expectedOutcome?.isEmpty == false ? "→ \(it.expectedOutcome!)" : "独立行动 · 完成即清")
             rows.append(PeekRow(project: nil,
                                 text: it.nextAction ?? it.title,
-                                secondary: sec,
+                                detail: it.expectedOutcome?.isEmpty == false ? "→ \(it.expectedOutcome!)" : "独立行动",
                                 remindAt: it.remindAt,
-                                lockedCount: 0))
+                                quadrant: quadrantOf(it)))
         }
-        return Array(rows.prefix(6))
+        // 四象限排序:急重 → 重要 → 紧急 → 其余;同象限内先到点的在前
+        rows.sort {
+            if $0.quadrant != $1.quadrant { return $0.quadrant < $1.quadrant }
+            return ($0.remindAt ?? .distantFuture) < ($1.remindAt ?? .distantFuture)
+        }
+        var out = Array(rows.prefix(6))
+        // 行数预算:行多时收敛子步骤,保证一屏放得下
+        let subBudget = out.count <= 2 ? 3 : (out.count <= 4 ? 2 : 0)
+        for i in out.indices { out[i].subSteps = Array(out[i].subSteps.prefix(subBudget)) }
+        return out
     }
 
-    /// 任务行(vibeisland 式,无背景框,靠字重分层):
-    /// 首行 = 粗白标题(项目 · 内容) + 右对齐彩色小方标签;
-    /// 次行 = 像素小生物(项目专属色,微动) + 灰色说明。
+    /// 象限标签
+    private func quadrantChip(_ q: Int) -> some View {
+        Group {
+            switch q {
+            case 0: metaChip("急·重", Theme.danger)
+            case 1: metaChip("重要", Theme.accent)
+            case 2: metaChip("紧急", Theme.warning)
+            default: EmptyView()
+            }
+        }
+    }
+
+    /// 任务主行:[图标] 白色题目  灰色说明 ……… [象限] [时间] [电量条 n/N]
+    /// 子行:列出后续步骤(锁定灰显)。
     private func taskCard(_ row: PeekRow) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        let hue = row.project.map(projectHue) ?? Color(red: 0.42, green: 0.62, blue: 1.0)
+        return VStack(alignment: .leading, spacing: 2.5) {
             HStack(spacing: 8) {
-                Text(row.project.map { "\($0) · \(row.text)" } ?? row.text)
+                if row.active {
+                    WorkingGlyph(pattern: Pixel.play, color: Theme.success, pixel: 1.7)
+                } else if model.dynamicIcons {
+                    CreatureGlyph(color: hue)
+                } else {
+                    PixelGlyph(pattern: Pixel.creatureA, color: hue, pixel: 1.7)
+                }
+                Text(row.text)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(.white.opacity(0.95))
                     .lineLimit(1)
+                    .layoutPriority(2)
+                Text(row.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
                 Spacer(minLength: 8)
+                quadrantChip(row.quadrant)
                 if let r = row.remindAt {
                     metaChip(DateMention.format(r), row.overdue ? Theme.danger : Theme.warning)
                 }
-                if row.lockedCount > 0 {
-                    metaChip("+\(row.lockedCount) 步", .white.opacity(0.45))
-                }
-                if let proj = row.project {
-                    metaChip(proj, projectHue(proj))
+                if row.totalAll > 1 {
+                    HStack(spacing: 3) {
+                        PixelBar(filled: row.doneSteps, total: row.totalAll, color: hue)
+                        Text("\(row.doneSteps)/\(row.totalAll)")
+                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
                 }
             }
-            HStack(spacing: 8) {
-                CreatureGlyph(color: row.project.map(projectHue) ?? Color(red: 0.42, green: 0.62, blue: 1.0))
-                if row.totalAll > 1 {
-                    // 像素电量条:链条进度(已完成/全长)
-                    PixelBar(filled: row.doneSteps, total: row.totalAll,
-                             color: row.project.map(projectHue) ?? Theme.success)
-                    Text("\(row.doneSteps)/\(row.totalAll)")
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.4))
+            ForEach(Array(row.subSteps.enumerated()), id: \.offset) { idx, step in
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 7)).foregroundStyle(.white.opacity(0.25))
+                    Text("\(idx + 2). \(step.text)")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.white.opacity(0.38))
+                        .lineLimit(1)
+                    if let r = step.remindAt {
+                        Text(DateMention.format(r))
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(Theme.warning.opacity(0.6))
+                    }
+                    Spacer(minLength: 0)
                 }
-                Text(row.secondary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.48))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
+                .padding(.leading, 21)
             }
         }
-        .padding(.vertical, 4)
     }
 
     /// 彩色小方标签(参考图右侧的 tag chips)
@@ -1218,7 +1302,7 @@ struct IslandView: View {
                                                      Color(red: 0.55, green: 0.35, blue: 0.95)],
                                             startPoint: .leading, endPoint: .trailing))
         )
-        .transition(.scale(scale: 0.86, anchor: .top).combined(with: .opacity).animation(.spring(response: 0.3, dampingFraction: 0.85)))
+        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity).animation(IslandController.morph))
     }
 
     private func collectFileURLs(from providers: [NSItemProvider], done: @escaping ([URL]) -> Void) {

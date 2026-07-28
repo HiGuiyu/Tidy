@@ -260,7 +260,7 @@ final class AppDatabase {
             try Item.fetchAll(db, sql: """
                 SELECT * FROM item WHERE isActionable = 1 AND status = 'clarified'
                   AND (gtdList IS NULL OR gtdList = 'action')
-                ORDER BY urgency DESC NULLS LAST, importance DESC NULLS LAST, seq ASC NULLS LAST, createdAt ASC LIMIT ?
+                ORDER BY (CASE WHEN COALESCE(importance,0)>=1 AND COALESCE(urgency,0)>=1 THEN 0 WHEN COALESCE(importance,0)>=1 THEN 1 WHEN COALESCE(urgency,0)>=1 THEN 2 ELSE 3 END), seq ASC NULLS LAST, remindAt ASC NULLS LAST, createdAt ASC LIMIT ?
                 """, arguments: [limit])
         }) ?? []
     }
@@ -271,8 +271,7 @@ final class AppDatabase {
         (try? dbQueue.read { db in
             try Item.fetchAll(db, sql: """
                 SELECT * FROM item WHERE status = 'clarified' AND gtdList = ?
-                ORDER BY remindAt ASC NULLS LAST, urgency DESC NULLS LAST,
-                         importance DESC NULLS LAST, seq ASC NULLS LAST, createdAt ASC LIMIT ?
+                ORDER BY (CASE WHEN COALESCE(importance,0)>=1 AND COALESCE(urgency,0)>=1 THEN 0 WHEN COALESCE(importance,0)>=1 THEN 1 WHEN COALESCE(urgency,0)>=1 THEN 2 ELSE 3 END), remindAt ASC NULLS LAST, seq ASC NULLS LAST, createdAt ASC LIMIT ?
                 """, arguments: [list, limit])
         }) ?? []
     }
@@ -331,11 +330,21 @@ final class AppDatabase {
                 loose.append(it)
             }
         }
+        // 四象限排序:重要且紧急 → 重要 → 紧急 → 其余(重要优先于单纯紧急)
+        func quadrant(_ it: Item) -> Int {
+            let imp = (it.importance ?? 0) >= 1, urg = (it.urgency ?? 0) >= 1
+            switch (imp, urg) {
+            case (true, true): return 0
+            case (true, false): return 1
+            case (false, true): return 2
+            case (false, false): return 3
+            }
+        }
         let merged = (loose + frontOfChain.values).sorted {
-            let u0 = $0.urgency ?? 0, u1 = $1.urgency ?? 0
-            if u0 != u1 { return u0 > u1 }
-            let i0 = $0.importance ?? 0, i1 = $1.importance ?? 0
-            if i0 != i1 { return i0 > i1 }
+            let q0 = quadrant($0), q1 = quadrant($1)
+            if q0 != q1 { return q0 < q1 }
+            let r0 = $0.remindAt ?? .distantFuture, r1 = $1.remindAt ?? .distantFuture
+            if r0 != r1 { return r0 < r1 }
             return $0.createdAt < $1.createdAt
         }
         return Array(merged.prefix(limit))
