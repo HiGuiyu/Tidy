@@ -139,6 +139,7 @@ final class IslandController {
 
     private var panel: KeyablePanel?
     private var hosting: NSHostingView<IslandView>?
+    private var sizer: NSHostingView<IslandView>?   // 离屏测量用(展示用视图是弹性顶对齐,无法测 intrinsic)
     let model = IslandModel()
     private var hoverTask: Task<Void, Never>?
     private var eventTask: Task<Void, Never>?
@@ -263,7 +264,12 @@ final class IslandController {
                 self?.setMode(.collapsed)
                 self?.onDrop?(urls)
             })
+        // 展示视图:充满面板、内容钉在顶部中央——窗口向下生长时内容原位不动,下缘逐渐显露
         let h = NSHostingView(rootView: view)
+        // 测量视图:同一 model 的 intrinsic 尺寸(不上屏)
+        var sizingView = view
+        sizingView.forSizing = true
+        sizer = NSHostingView(rootView: sizingView)
         let p = KeyablePanel(contentRect: NSRect(x: 0, y: 0, width: 200, height: 32),
                              styleMask: [.borderless, .nonactivatingPanel],
                              backing: .buffered, defer: false)
@@ -326,21 +332,22 @@ final class IslandController {
     static var screen: NSScreen? { NSScreen.screens.first ?? NSScreen.main }
 
     private func relayout(animate: Bool = true) {
-        guard let panel, let hosting else { return }
-        hosting.layoutSubtreeIfNeeded()
-        var size = hosting.fittingSize
+        guard let panel, let sizer else { return }
+        sizer.layoutSubtreeIfNeeded()
+        var size = sizer.fittingSize
         size.width = max(size.width, Self.minCollapsedWidth)
         guard abs(size.width - lastSize.width) > 0.5 || abs(size.height - lastSize.height) > 0.5 else { return }
         lastSize = size
         guard let screen = Self.screen else { return }
         let f = screen.frame
+        // 顶边恒定贴屏:y + height ≡ maxY,帧插值全程顶边不动——
+        // 过冲只作用在下缘,形成"从原位向下弹性伸展"的观感,不会出现顶部缝隙
         let frame = NSRect(x: f.midX - size.width / 2, y: f.maxY - size.height,
                            width: size.width, height: size.height)
         if animate, panel.isVisible {
             NSAnimationContext.runAnimationGroup { ctx in
-                // 带轻微过冲的贝塞尔:展开有"弹开"的动力学,而非线性抵达
                 ctx.duration = 0.5
-                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.32, 1.25, 0.5, 1.0)
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.32, 1.22, 0.48, 1.0)
                 panel.animator().setFrame(frame, display: true)
             }
         } else {
@@ -416,12 +423,22 @@ struct IslandView: View {
     let onHoverChange: (Bool) -> Void
     let onDropTargeted: (Bool) -> Void
     let onDrop: ([URL]) -> Void
+    var forSizing = false     // 测量实例:按 intrinsic 尺寸;展示实例:充满面板顶对齐
 
     private var notchInset: CGFloat { IslandController.notchInset }
     private var notchWidth: CGFloat { IslandController.notchWidth }
     private var collapsedHeight: CGFloat { notchInset > 0 ? notchInset : 26 }
 
     var body: some View {
+        if forSizing {
+            core
+        } else {
+            // 钉在面板顶部中央:窗口帧向下伸展时,岛体原位显露,顶边永远贴合屏幕上缘
+            core.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    private var core: some View {
         Group {
             switch model.mode {
             case .collapsed: collapsedView
@@ -547,7 +564,7 @@ struct IslandView: View {
                 .frame(minWidth: IslandController.minCollapsedWidth)
             }
         }
-        .transition(.scale(scale: 0.94).combined(with: .opacity))
+        .transition(.opacity)
     }
 
     /// 左翼:聚焦时绿色 ▶,平时最高优先级状态标
@@ -650,7 +667,7 @@ struct IslandView: View {
                 .frame(width: max(400, IslandController.minCollapsedWidth))
             }
         }
-        .transition(.scale(scale: 0.92).combined(with: .opacity))
+        .transition(.opacity)
     }
 
     // MARK: 预览态
@@ -701,7 +718,7 @@ struct IslandView: View {
         .padding(.top, notchInset > 0 ? notchInset + 6 : 10)
         .padding(.bottom, 12)
         .frame(width: max(390, IslandController.minCollapsedWidth), alignment: .leading)
-        .transition(.scale(scale: 0.95).combined(with: .opacity))
+        .transition(.opacity)
     }
 
     private func darkChain(_ chain: TodoPreviewData.Chain) -> some View {
@@ -754,7 +771,7 @@ struct IslandView: View {
                                                      Color(red: 0.55, green: 0.35, blue: 0.95)],
                                             startPoint: .leading, endPoint: .trailing))
         )
-        .transition(.scale(scale: 0.92).combined(with: .opacity))
+        .transition(.opacity)
     }
 
     private func collectFileURLs(from providers: [NSItemProvider], done: @escaping ([URL]) -> Void) {
