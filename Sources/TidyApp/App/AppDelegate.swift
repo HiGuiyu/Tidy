@@ -80,6 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupHotKeys() {
+        // 双击 ⌘ = 捕获(零记忆成本的第一入口;全局生效需辅助功能权限)
+        DoubleTapCommand.shared.onDoubleTap = { [weak self] in self?.showCapture() }
+        DoubleTapCommand.shared.start()
         HotKeyManager.shared.registerAll(
             archive: { [weak self] in self?.archiveFromFinder() },
             capture: { [weak self] in self?.showCapture() },

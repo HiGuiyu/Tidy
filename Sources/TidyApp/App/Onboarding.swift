@@ -76,8 +76,8 @@ private struct OnboardingView: View {
 
             // 三条心法
             VStack(alignment: .leading, spacing: 9) {
-                principle("1", "冒出任何念头,⌥⌘N 扔进来,立刻忘掉它",
-                          "捕获的意义是清空大脑。别分类、别判断,交给系统,继续手头的事。", Theme.warning)
+                principle("1", "冒出任何念头,双击 ⌘ 扔进来,立刻忘掉它",
+                          "捕获的意义是清空大脑。别分类、别判断,交给系统,继续手头的事。(⌥⌘N 同效;全局生效需在岛菜单开启辅助功能)", Theme.warning)
                 principle("2", "理清时你只做「确认」,AI 已替你想好一半",
                           "每条想法只过一次脑子:是任务还是想法?下一步是什么?能 2 分钟做完就现在做。剩下的一键采纳。", Theme.violet)
                 principle("3", "永远只看「下一步行动」,后面的事系统替你锁着",
@@ -88,7 +88,7 @@ private struct OnboardingView: View {
 
             // 动线 + 快捷键
             VStack(alignment: .leading, spacing: 7) {
-                flowLine("tray.and.arrow.down.fill", Theme.warning, "收集", "⌥⌘N 记想法 · 拖文件到悬浮圆点归档(⌥⌘A 归档 Finder 选中)")
+                flowLine("tray.and.arrow.down.fill", Theme.warning, "收集", "双击 ⌘(或 ⌥⌘N)记想法 · 拖文件到灵动岛归档(⌥⌘A 归档 Finder 选中)")
                 flowLine("wand.and.stars", Theme.violet, "理清", "⌥⌘I 逐条确认 AI 草稿,收件箱清零")
                 flowLine("square.grid.2x2.fill", Theme.accent, "组织", "自动进入 行动/等待/搁置 清单;项目任务用「AI 拆解」生成行动链")
                 flowLine("timer", Theme.success, "执行", "⌥⌘P 打开工作台,看「现在该做什么」,点 ▶ 进入 25 分钟聚焦")

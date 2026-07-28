@@ -1,5 +1,66 @@
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
+
+/// 双击 ⌘ 唤出捕获:零记忆成本的第一入口。
+/// 全局监听需要辅助功能权限;App 自身激活时走本地监听(无需权限)。
+@MainActor
+final class DoubleTapCommand {
+    static let shared = DoubleTapCommand()
+
+    var onDoubleTap: (() -> Void)?
+
+    private var monitors: [Any] = []
+    private var lastCmdPress: TimeInterval = 0
+    private var cmdWasDown = false
+    private var dirty = false     // 两次按下之间出现过其他按键/组合键 → 不算双击
+
+    static var hasPermission: Bool { AXIsProcessTrusted() }
+
+    static func requestPermission() {
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        AXIsProcessTrustedWithOptions(opts)
+    }
+
+    func start() {
+        stop()
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown],
+                                                     handler: { [weak self] e in
+            Task { @MainActor in self?.handle(e) }
+        }) { monitors.append(g) }
+        if let l = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown],
+                                                    handler: { [weak self] e in
+            self?.handle(e)
+            return e
+        }) { monitors.append(l) }
+    }
+
+    private func stop() {
+        for m in monitors { NSEvent.removeMonitor(m) }
+        monitors = []
+    }
+
+    private func handle(_ e: NSEvent) {
+        if e.type == .keyDown {
+            dirty = true          // ⌘C 之类的组合键不触发
+            return
+        }
+        let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let cmdDown = flags.contains(.command)
+        let onlyCmd = flags.subtracting(.command).isEmpty
+        if cmdDown && !cmdWasDown {
+            let now = ProcessInfo.processInfo.systemUptime
+            if onlyCmd, !dirty, now - lastCmdPress < 0.38 {
+                lastCmdPress = 0
+                onDoubleTap?()
+            } else {
+                lastCmdPress = now
+            }
+            dirty = !onlyCmd
+        }
+        cmdWasDown = cmdDown
+    }
+}
 
 /// 全局快捷键(§10.2)。用 Carbon RegisterEventHotKey,无需 Accessibility 权限。
 final class HotKeyManager {

@@ -504,6 +504,8 @@ final class IslandMenuBridge: NSObject {
         let styleItem = NSMenuItem(title: "质感", action: nil, keyEquivalent: "")
         m.addItem(styleItem)
         m.setSubmenu(styleMenu, for: styleItem)
+        let axOK = DoubleTapCommand.hasPermission
+        add(axOK ? "双击 ⌘ 捕获:已全局启用 ✓" : "双击 ⌘ 捕获:开启全局生效(辅助功能)…", #selector(requestAX))
         let dyn = NSMenuItem(title: "动态图标", action: #selector(toggleDyn), keyEquivalent: "")
         dyn.target = self
         dyn.state = IslandController.shared.model.dynamicIcons ? .on : .off
@@ -536,6 +538,14 @@ final class IslandMenuBridge: NSObject {
     @objc private func selfCheck() { AppActions.selfCheck() }
     @objc private func hideIsland() { IslandController.shared.hideTemporarily() }
     @objc private func quit() { AppActions.quit() }
+    @objc private func requestAX() {
+        if DoubleTapCommand.hasPermission {
+            ToastManager.shared.show("双击 ⌘ 已全局生效,任何应用里都能唤出捕获", duration: 3)
+        } else {
+            DoubleTapCommand.requestPermission()
+            ToastManager.shared.show("在系统设置里勾选 Tidy 后,双击 ⌘ 即全局生效(重启 App 生效)", duration: 6)
+        }
+    }
     @objc private func toggleDyn() {
         IslandController.shared.model.toggleDynamicIcons()
     }
@@ -1136,6 +1146,11 @@ struct IslandView: View {
                     }
                 }
             }
+            // 常驻最小教学:只教三件最重要的事
+            Text("双击 ⌘ 捕获 · ⌥⌘P 工作台 · 右键更多")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.white.opacity(0.26))
+                .padding(.top, 2)
         }
         .padding(.horizontal, 20)   // 文字与岛缘之间留足呼吸
     }
@@ -1204,15 +1219,13 @@ struct IslandView: View {
         return out
     }
 
-    /// 象限标签
-    private func quadrantChip(_ q: Int) -> some View {
-        Group {
-            switch q {
-            case 0: metaChip("急·重", Theme.danger)
-            case 1: metaChip("重要", Theme.accent)
-            case 2: metaChip("紧急", Theme.warning)
-            default: EmptyView()
-            }
+    /// 象限 → 行首细色条颜色(比文字标签更安静:红=急重,蓝=重要,橙=紧急)
+    private func quadrantColor(_ q: Int) -> Color {
+        switch q {
+        case 0: return Theme.danger
+        case 1: return Theme.accent
+        case 2: return Theme.warning
+        default: return .white.opacity(0.12)
         }
     }
 
@@ -1222,6 +1235,10 @@ struct IslandView: View {
         let hue = row.project.map(projectHue) ?? Color(red: 0.42, green: 0.62, blue: 1.0)
         return VStack(alignment: .leading, spacing: 2.5) {
             HStack(spacing: 8) {
+                // 行首象限色条:一眼分级,不占文字空间
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(quadrantColor(row.quadrant))
+                    .frame(width: 2.5, height: 15)
                 if row.active {
                     WorkingGlyph(pattern: Pixel.play, color: Theme.success, pixel: 1.7)
                 } else if model.dynamicIcons {
@@ -1239,7 +1256,6 @@ struct IslandView: View {
                     .foregroundStyle(.white.opacity(0.5))
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                quadrantChip(row.quadrant)
                 if let r = row.remindAt {
                     metaChip(DateMention.format(r), row.overdue ? Theme.danger : Theme.warning)
                 }
@@ -1267,7 +1283,7 @@ struct IslandView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(.leading, 21)
+                .padding(.leading, 31)
             }
         }
     }
