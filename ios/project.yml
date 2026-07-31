@@ -1,0 +1,50 @@
+# TidyPhone — XcodeGen 工程描述
+# 用法:brew install xcodegen && cd ios && xcodegen && open TidyPhone.xcodeproj
+name: TidyPhone
+options:
+  bundleIdPrefix: cc.tidy
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift.git
+    from: 7.0.0
+
+targets:
+  TidyPhone:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      # 与 Mac 版共享的平台无关核心(实体/库/日期解析/拼音/AI 客户端/埋点/记忆/配置)
+      - path: ../Sources/TidyApp/Core/Database/Models.swift
+      - path: ../Sources/TidyApp/Core/Database/AppDatabase.swift
+      - path: ../Sources/TidyApp/Core/DateMention.swift
+      - path: ../Sources/TidyApp/Panel/FuzzyMatcher.swift
+      - path: ../Sources/TidyApp/Core/Classifier/OpenAIClient.swift
+      - path: ../Sources/TidyApp/Telemetry/Telemetry.swift
+      - path: ../Sources/TidyApp/Core/Memory/MemoryStore.swift
+      - path: ../Sources/TidyApp/App/EnvConfig.swift
+    dependencies:
+      - package: GRDB
+        product: GRDB
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Tidy
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [tidy]
+            CFBundleURLName: cc.tidy.phone
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_KEY_UIUserInterfaceStyle: Automatic
