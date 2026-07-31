@@ -57,6 +57,7 @@ final class ClarifyController {
 
         let view = ClarifyView(model: m,
                                onConfirm: { [weak self] in self?.confirm() },
+                               onRefine: { [weak self] in self?.refineWithAnswer() },
                                onTwoMinDone: { [weak self] in self?.twoMinDone() },
                                onDrop: { [weak self] in self?.dropCurrent() },
                                onSkip: { [weak self] in self?.skip() })
@@ -205,6 +206,41 @@ final class ClarifyController {
         panel?.makeKeyAndOrderFront(nil)
     }
 
+    /// 把用户对关键问题的回答交回 AI,重新起草整份草稿
+    func refineWithAnswer() {
+        guard let m = model, let client = aiClient, let itemId = m.item.id else { return }
+        let answer = m.questionAnswer.trimmingCharacters(in: .whitespaces)
+        guard !answer.isEmpty else { return }
+        let combined = (m.item.content ?? m.item.title) + "\n(补充说明:\(answer))"
+        // 回答沉淀进条目正文,后续查看/再理清都带着上下文
+        try? AppDatabase.shared.dbQueue.write { db in
+            try db.execute(sql: "UPDATE item SET content = ?, updatedAt = ? WHERE id = ?",
+                           arguments: [combined, Date(), itemId])
+        }
+        Telemetry.record(event: "clarify_refine", itemId: itemId)
+        m.aiQuestion = nil
+        m.questionAnswer = ""
+        m.userEdited = false
+        m.aiLoading = true
+        aiTask?.cancel()
+        aiTask = Task { [weak self, weak m] in
+            do {
+                let projects = AppDatabase.shared.activeProjects()
+                let draft = try await client.clarify(
+                    text: combined,
+                    projectPaths: projects.map(\.path),
+                    activeProjectPath: FocusManager.shared.activeProjectPath)
+                guard let self, let m, self.model === m, !Task.isCancelled else { return }
+                m.aiLoading = false
+                m.applyDraft(draft, projects: projects)
+            } catch {
+                guard let m, !Task.isCancelled else { return }
+                m.aiLoading = false
+                m.aiReason = "重新起草失败,直接改表单即可"
+            }
+        }
+    }
+
     /// 采纳一份 AI 草稿(岛事件卡「采纳」按钮 / 收件箱一键采纳共用)
     static func adopt(itemId: Int64, draft d: OpenAIClient.ClarifyDraft) {
         let projects = AppDatabase.shared.activeProjects()
@@ -267,6 +303,7 @@ final class ClarifyModel: ObservableObject {
     @Published var aiLoading = false
     @Published var aiReason: String? = nil
     @Published var aiQuestion: String? = nil   // 低置信时 AI 只问的那一个问题
+    @Published var questionAnswer = ""         // 你的回答 → 交回 AI 重新起草
 
     enum IdeaDest { case someday, resource }
     @Published var ideaDestination: IdeaDest = .someday
@@ -322,6 +359,7 @@ final class ClarifyModel: ObservableObject {
 struct ClarifyView: View {
     @ObservedObject var model: ClarifyModel
     let onConfirm: () -> Void
+    let onRefine: () -> Void
     let onTwoMinDone: () -> Void
     let onDrop: () -> Void
     let onSkip: () -> Void
@@ -379,14 +417,27 @@ struct ClarifyView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.07)))
     }
 
-    /// 低置信横幅:AI 不确定时只问一个最关键的问题,而不是让用户核对整张表单
+    /// 低置信横幅:AI 只问一个最关键的问题,就地回答 → AI 重新起草整份草稿
     private func questionBanner(_ q: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "questionmark.circle.fill").foregroundStyle(Theme.violet)
-            Text("AI 想确认:\(q)")
-                .font(Theme.fontSub).foregroundStyle(Theme.violet)
-            Spacer()
-            Text("答案改到下面表单里即可").font(Theme.fontMicro).foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.circle.fill").foregroundStyle(Theme.violet)
+                Text("AI 想确认:\(q)")
+                    .font(Theme.fontSub).foregroundStyle(Theme.violet)
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                TextField("一句话回答…", text: $model.questionAnswer)
+                    .textFieldStyle(.roundedBorder).font(Theme.fontSub)
+                    .onSubmit { onRefine() }
+                Button {
+                    onRefine()
+                } label: { Label("重新起草", systemImage: "sparkles") }
+                    .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.violet)
+                    .disabled(model.questionAnswer.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Text("也可以不回答,直接改下面的表单")
+                .font(Theme.fontMicro).foregroundStyle(.tertiary)
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Theme.violet.opacity(0.08)))

@@ -46,6 +46,16 @@ final class FocusManager {
         }
     }
 
+    /// 工作台"正在做"卡片的实时状态文本
+    var hudText: String? {
+        guard let a = active else { return nil }
+        let e = elapsedSeconds
+        if isPaused { return "⏸ 已专注 \(formatMMSS(e)) · 暂停中" }
+        let remain = a.boxMinutes * 60 - e
+        return remain >= 0 ? "剩余 \(formatMMSS(remain)) · 已专注 \(formatMMSS(e))"
+                           : "超时 +\(formatMMSS(-remain)) · 已专注 \(formatMMSS(e))"
+    }
+
     /// 净专注时长(秒):扣除全部暂停时间
     private var elapsedSeconds: Int {
         guard let a = active else { return 0 }

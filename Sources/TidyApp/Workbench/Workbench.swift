@@ -526,19 +526,223 @@ struct WorkbenchView: View {
 
     // MARK: 总览
 
+    /// 总览 = 一屏三栏,零切换看全局:待理清 | 正在做 | PARA 层级
     private var overview: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // 待办永远在第一屏最显眼的位置(GTD:回答「现在干什么」)
-                nextActionsHero
-                if !model.inbox.isEmpty { inboxBanner }
-                gtdFlowStrip
-                if model.doneToday > 0 { doneCelebration }
-                projectsSection
-            }
-            .padding(16)
+        HStack(alignment: .top, spacing: 10) {
+            inboxColumn.frame(width: 238)
+            Divider()
+            nowColumn.frame(maxWidth: .infinity)
+            Divider()
+            paraColumn.frame(width: 238)
         }
-        .frame(maxHeight: 560)
+        .padding(12)
+        .frame(height: 476, alignment: .top)
+    }
+
+    // MARK: 左栏:待理清
+
+    private var inboxColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionHeader("tray.fill", "待理清(\(model.inbox.count))", Theme.warning)
+                Spacer()
+                let n = model.inboxEntries.filter { $0.adoptable }.count
+                if n > 0 {
+                    Button("采纳 \(n)") { model.adoptAll() }
+                        .controlSize(.mini).tint(Theme.success)
+                }
+            }
+            if model.inboxEntries.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("已清空 ✓").font(Theme.fontSub).foregroundStyle(Theme.success)
+                    Text("双击 ⌘ 随手记,想法都会先到这里").font(Theme.fontMicro).foregroundStyle(.tertiary)
+                }
+                .padding(.top, 6)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(model.inboxEntries) { entry in miniInboxRow(entry) }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func miniInboxRow(_ entry: WorkbenchModel.InboxEntry) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(entry.item.title)
+                .font(.system(size: 12, weight: .medium)).lineLimit(1)
+            if let s = entry.draftSummary {
+                Text(s).font(Theme.fontMicro)
+                    .foregroundStyle(entry.adoptable ? Theme.violet : Theme.warning)
+                    .lineLimit(1)
+            }
+            HStack(spacing: 6) {
+                if entry.adoptable {
+                    Button("采纳") {
+                        model.adopt(entry)
+                        model.reload()
+                    }
+                    .controlSize(.mini).tint(Theme.success)
+                }
+                Button(entry.adoptable ? "细看" : "理清") {
+                    ClarifyController.shared.present(single: entry.item) { [weak model] in model?.reload() }
+                }
+                .controlSize(.mini).tint(Theme.violet)
+                Spacer()
+                if let r = entry.item.remindAt {
+                    Text(DateMention.format(r)).font(Theme.fontMicro).foregroundStyle(Theme.warning)
+                }
+            }
+        }
+        .padding(7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.05)))
+    }
+
+    // MARK: 中栏:正在做 + 下一步
+
+    private var nowColumn: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionHeader("play.fill", "正在做", Theme.success)
+            focusCard
+            HStack {
+                sectionHeader("bolt.fill", "下一步(全部项目)", Theme.accent)
+                Spacer()
+                if model.nextActions.count > 6 {
+                    Button("全部 \(model.nextActions.count)") { model.tab = .action }.controlSize(.mini)
+                }
+            }
+            if model.nextActions.isEmpty {
+                Text(model.inbox.isEmpty ? "行动清单是空的。双击 ⌘ 捕获想法" : "← 先理清左边的想法,行动会出现在这里")
+                    .font(Theme.fontSub).foregroundStyle(.tertiary)
+            } else {
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(model.nextActions.prefix(7)) { row in heroActionRow(row) }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private var focusCard: some View {
+        if FocusManager.shared.isActive, let a = FocusManager.shared.active {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                HStack(spacing: 10) {
+                    WorkingGlyph(pattern: Pixel.play, color: Theme.success, pixel: 2.0)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(a.projectName).font(.system(size: 13.5, weight: .bold))
+                        Text(FocusManager.shared.hudText ?? "")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Theme.success)
+                    }
+                    Spacer()
+                    if FocusManager.shared.isPaused {
+                        Button("继续") { FocusManager.shared.resume() }
+                            .controlSize(.mini).tint(Theme.success)
+                    } else {
+                        Button("暂停") { FocusManager.shared.requestPause() }.controlSize(.mini)
+                    }
+                    Button("结束") { AppActions.endFocus() }.controlSize(.mini)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Theme.success.opacity(0.08)))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.success.opacity(0.25), lineWidth: 1))
+            }
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: "moon.zzz").font(.system(size: 13)).foregroundStyle(.tertiary)
+                Text("没有进行中的事——从右侧选个项目进聚焦,或勾掉下面一件")
+                    .font(Theme.fontSub).foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 6)
+        }
+    }
+
+    // MARK: 右栏:PARA 层级
+
+    private var paraColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("square.stack.3d.up.fill", "PARA", Theme.teal)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    paraProjects
+                    paraDirSection("领域", top: "2-Areas", icon: "square.grid.2x2")
+                    paraDirSection("资源", top: "3-Resources", icon: "books.vertical")
+                    paraArchiveRow
+                }
+            }
+        }
+    }
+
+    private var actionCountByProject: [String: Int] {
+        Dictionary(grouping: model.nextActions.compactMap(\.projectName)) { $0 }.mapValues(\.count)
+    }
+
+    private var paraProjects: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("项目 · \(model.results.count)").font(Theme.fontMicro).foregroundStyle(.tertiary)
+            ForEach(Array(model.results.enumerated()), id: \.element.path) { idx, p in
+                let selected = idx == model.selectedIndex
+                HStack(spacing: 6) {
+                    Circle().fill(projectHue(p.name)).frame(width: 6, height: 6)
+                    Text(p.name).font(.system(size: 12, weight: selected ? .semibold : .regular)).lineLimit(1)
+                    Spacer()
+                    if let c = actionCountByProject[p.name] {
+                        Text("⚡\(c)").font(Theme.fontMicro).foregroundStyle(Theme.accent)
+                    }
+                }
+                .padding(.horizontal, 6).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 7)
+                    .fill(selected ? Theme.accent.opacity(0.12) : .clear))
+                .contentShape(Rectangle())
+                .onTapGesture { model.open(project: p) }
+                .onHover { if $0 { model.selectedIndex = idx } }
+            }
+            if model.results.isEmpty {
+                Text("还没有项目(⌘N 新建)").font(Theme.fontMicro).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func paraDirSection(_ label: String, top: String, icon: String) -> some View {
+        let children = ParaTree.shared.destinations.filter {
+            $0.relativePath.hasPrefix(top + "/") && $0.relativePath.components(separatedBy: "/").count == 2
+        }
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("\(label) · \(children.count)").font(Theme.fontMicro).foregroundStyle(.tertiary)
+            ForEach(children.prefix(6), id: \.relativePath) { d in
+                HStack(spacing: 6) {
+                    Image(systemName: icon).font(.system(size: 10)).foregroundStyle(Theme.teal)
+                    Text(d.leafName).font(.system(size: 12)).lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 6).padding(.vertical, 3.5)
+                .contentShape(Rectangle())
+                .onTapGesture { NSWorkspace.shared.open(d.url) }
+            }
+            if children.isEmpty {
+                Text("空").font(Theme.fontMicro).foregroundStyle(.quaternary)
+            }
+        }
+    }
+
+    private var paraArchiveRow: some View {
+        let count = ParaTree.shared.destinations.filter {
+            $0.relativePath.hasPrefix("4-Archive/")
+        }.count
+        return HStack(spacing: 6) {
+            Image(systemName: "archivebox").font(.system(size: 10)).foregroundStyle(.tertiary)
+            Text("归档 · \(count)").font(.system(size: 12)).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 6).padding(.vertical, 3.5)
+        .contentShape(Rectangle())
+        .onTapGesture { NSWorkspace.shared.open(ParaTree.root.appendingPathComponent("4-Archive")) }
     }
 
     /// 置顶待办清单:大字号、完成圈、悬停可直接进聚焦

@@ -1309,10 +1309,11 @@ struct IslandView: View {
     private func taskCard(_ row: PeekRow, compact: Bool) -> some View {
         let hue = row.project.map(projectHue) ?? Color(red: 0.42, green: 0.62, blue: 1.0)
         return HStack(alignment: .top, spacing: 9) {
-            // 象限色条(通卡高)
+            // 象限色条(通卡高;maxHeight 由卡片 fixedSize 约束,不会贪婪撑高)
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(quadrantColor(row.quadrant))
                 .frame(width: 3)
+                .frame(maxHeight: .infinity)
             // 图标列
             VStack(spacing: 4) {
                 if row.active {
@@ -1372,6 +1373,8 @@ struct IslandView: View {
         .padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(Color.white.opacity(0.06)))
+        // 关键:卡片垂直方向紧贴内容——否则弹性子视图(色条)会把卡片撑满整个画布
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// 彩色小方标签(参考图右侧的 tag chips)
