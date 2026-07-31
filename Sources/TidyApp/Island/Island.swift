@@ -168,6 +168,16 @@ struct PixelBar: View {
     }
 }
 
+/// 模式内容过渡:进场滞后于岛体 70ms(先看到岛抻开,内容随后长进去),
+/// 退场先快速淡出(岛收拢时里面已经干净)——观感上内容永远"住在"岛里
+@MainActor
+var islandModeTransition: AnyTransition {
+    .asymmetric(
+        insertion: .scale(scale: 0.9, anchor: .top).combined(with: .opacity)
+            .animation(IslandController.contentIn),
+        removal: .opacity.animation(.easeOut(duration: 0.15)))
+}
+
 /// 项目名 → 稳定的像素色(同项目每次同色)
 func projectHue(_ name: String) -> Color {
     var h: UInt32 = 5381
@@ -193,6 +203,52 @@ struct IslandEvent: Identifiable {
     var actions: [Action] = []
     var duration: TimeInterval = 8
     var kind = "generic"
+    var silent = false        // 提示级事件无声(三级注意力:环境/提示/介入)
+}
+
+// MARK: - 注意力治理(提示级提醒被连续忽略 → 自动降频,而不是提高强度)
+
+@MainActor
+enum AttentionGovernor {
+    /// 受治理的提示级事件(介入级如到点提醒、时间盒不降级)
+    static let governed: Set<String> = ["stretch", "brief", "someday", "waiting"]
+
+    private static func key(_ kind: String) -> String { "ign-\(kind)" }
+
+    static func ignores(_ kind: String) -> Int {
+        UserDefaults.standard.integer(forKey: key(kind))
+    }
+
+    /// 事件收场时记账:点了按钮 = 参与(计数清零);超时消失 = 忽略 +1
+    static func recordDismiss(kind: String, byAction: Bool) {
+        guard governed.contains(kind) else { return }
+        if byAction {
+            UserDefaults.standard.set(0, forKey: key(kind))
+        } else {
+            let n = ignores(kind) + 1
+            UserDefaults.standard.set(n, forKey: key(kind))
+            if n == 3 {
+                Telemetry.record(event: "attention_downgrade", chosenPath: kind)
+                ToastManager.shared.show("最近几次没理「\(label(kind))」,已自动降低它的频率(下次点一下按钮即可恢复)", duration: 5)
+            }
+        }
+    }
+
+    /// 降级放行:忽略 ≥3 次后隔次触发,封顶每 4 次放行 1 次
+    static func shouldFire(_ kind: String) -> Bool {
+        guard governed.contains(kind) else { return true }
+        let n = ignores(kind)
+        guard n >= 3 else { return true }
+        let skipKey = "ignskip-\(kind)"
+        let c = UserDefaults.standard.integer(forKey: skipKey) + 1
+        UserDefaults.standard.set(c, forKey: skipKey)
+        let stride = min(1 << (n - 2), 4)
+        return c % stride == 0
+    }
+
+    static func label(_ kind: String) -> String {
+        ["stretch": "久坐活动", "brief": "半天简报", "someday": "搁置扫描", "waiting": "等待催办"][kind] ?? kind
+    }
 }
 
 // MARK: - 点击穿透宿主
@@ -333,7 +389,7 @@ final class IslandController {
     private func showEvent(_ e: IslandEvent) {
         model.event = e
         model.eventProgress = 1
-        SoundFX.event()
+        if !e.silent { SoundFX.event() }
         setMode(.event)
         Telemetry.record(event: "island_event", chosenPath: e.kind)
         eventTask?.cancel()
@@ -351,7 +407,10 @@ final class IslandController {
         }
     }
 
-    func dismissEvent() {
+    func dismissEvent(engaged: Bool = false) {
+        if let e = model.event {
+            AttentionGovernor.recordDismiss(kind: e.kind, byAction: engaged)
+        }
         eventTask?.cancel()
         model.event = nil
         if let next = eventQueue.first {
@@ -369,7 +428,7 @@ final class IslandController {
         Telemetry.record(event: "island_action", chosenPath: action.label)
         SoundFX.tap()
         action.handler()
-        dismissEvent()
+        dismissEvent(engaged: true)
     }
 
     // MARK: 面板
@@ -379,7 +438,7 @@ final class IslandController {
             model: model,
             controller: self,
             onClick: { [weak self] in
-                if self?.model.event != nil { self?.dismissEvent() }
+                if self?.model.event != nil { self?.dismissEvent(engaged: true) }  // 点开也算参与
                 WorkbenchController.shared.toggle()
             },
             onHoverChange: { [weak self] h in self?.hoverChanged(h) },
@@ -451,6 +510,10 @@ final class IslandController {
     /// 全岛唯一的形变弹簧:身体、内容过渡共用同一条曲线,保证完全同步
     static let morph = Animation.spring(response: 0.45, dampingFraction: 0.8)
 
+    /// 内容过渡:进场比岛体略滞后 70ms——先看到岛抻开,内容随后"长"进去;
+    /// 退场则先快速淡出,让岛体收拢时里面已经干净
+    static let contentIn = morph.delay(0.07)
+
     private func setMode(_ mode: IslandModel.Mode) {
         guard model.mode != mode else { return }
         if mode != .peek { model.preview = nil }
@@ -486,6 +549,11 @@ final class IslandMenuBridge: NSObject {
         add("归档 Finder 选中项\t⌥⌘A", #selector(archive))
         add("关联 Finder 选中的文档…", #selector(linkDocs))
         if FocusManager.shared.isActive {
+            if FocusManager.shared.isPaused {
+                add("继续聚焦", #selector(resumeFocus))
+            } else {
+                add("暂停聚焦(记录中断)…", #selector(pauseFocus))
+            }
             add("结束聚焦…", #selector(endFocus))
         }
         m.addItem(.separator())
@@ -530,6 +598,8 @@ final class IslandMenuBridge: NSObject {
     @objc private func archive() { AppActions.archiveFinder() }
     @objc private func linkDocs() { AppActions.linkDocs() }
     @objc private func endFocus() { AppActions.endFocus() }
+    @objc private func pauseFocus() { FocusManager.shared.requestPause() }
+    @objc private func resumeFocus() { FocusManager.shared.resume() }
     @objc private func review() { AppActions.review() }
     @objc private func stats() { AppActions.stats() }
     @objc private func onboarding() { AppActions.onboarding() }
@@ -779,6 +849,11 @@ struct IslandView: View {
         Button("归档 Finder 选中项\t⌥⌘A") { AppActions.archiveFinder() }
         Button("撤销上次归档\t⌥⌘Z") { AppActions.undo() }
         if FocusManager.shared.isActive {
+            if FocusManager.shared.isPaused {
+                Button("继续聚焦") { FocusManager.shared.resume() }
+            } else {
+                Button("暂停聚焦(记录中断)…") { FocusManager.shared.requestPause() }
+            }
             Button("结束聚焦…") { AppActions.endFocus() }
         }
         Divider()
@@ -829,7 +904,7 @@ struct IslandView: View {
                 .clipped()   // 状态信息绝不越过岛体边缘
             }
         }
-        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity).animation(IslandController.morph))
+        .transition(islandModeTransition)
     }
 
     /// 左翼:正在做事(聚焦/两分钟)时像素标持续闪动;否则最高优先级状态标
@@ -978,7 +1053,7 @@ struct IslandView: View {
                 .frame(width: expandedWidth)
             }
         }
-        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity).animation(IslandController.morph))
+        .transition(islandModeTransition)
     }
 
     // MARK: 预览态
@@ -990,7 +1065,7 @@ struct IslandView: View {
         }
         .padding(.bottom, 14)
         .frame(width: expandedWidth, alignment: .leading)
-        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity).animation(IslandController.morph))
+        .transition(islandModeTransition)
     }
 
     /// 顶带(vibeisland 式):左 = 像素 Logo + 彩色数字统计;右 = ✓今日 + 喇叭 + 齿轮。
@@ -1125,9 +1200,9 @@ struct IslandView: View {
                         .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.6))
                         .padding(.vertical, 4)
                 } else {
-                    VStack(spacing: 7) {
+                    VStack(spacing: 6) {
                         ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                            taskCard(row)
+                            taskCard(row, compact: rows.count > 3)
                         }
                     }
                     let hidden = data.totalOpen - rows.count
@@ -1229,63 +1304,74 @@ struct IslandView: View {
         }
     }
 
-    /// 任务主行:[图标] 白色题目  灰色说明 ……… [象限] [时间] [电量条 n/N]
-    /// 子行:列出后续步骤(锁定灰显)。
-    private func taskCard(_ row: PeekRow) -> some View {
+    /// 任务卡片(参考 vibeisland 布局):
+    /// ┃象限色条 │ 图标列(生物+电量条) │ 内容列:粗白题目+右侧标签 / 灰色说明(可两行) / 锁定子步骤
+    private func taskCard(_ row: PeekRow, compact: Bool) -> some View {
         let hue = row.project.map(projectHue) ?? Color(red: 0.42, green: 0.62, blue: 1.0)
-        return VStack(alignment: .leading, spacing: 2.5) {
-            HStack(spacing: 8) {
-                // 行首象限色条:一眼分级,不占文字空间
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(quadrantColor(row.quadrant))
-                    .frame(width: 2.5, height: 15)
+        return HStack(alignment: .top, spacing: 9) {
+            // 象限色条(通卡高)
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(quadrantColor(row.quadrant))
+                .frame(width: 3)
+            // 图标列
+            VStack(spacing: 4) {
                 if row.active {
-                    WorkingGlyph(pattern: Pixel.play, color: Theme.success, pixel: 1.7)
+                    WorkingGlyph(pattern: Pixel.play, color: Theme.success, pixel: 1.8)
                 } else if model.dynamicIcons {
                     CreatureGlyph(color: hue)
                 } else {
                     PixelGlyph(pattern: Pixel.creatureA, color: hue, pixel: 1.7)
                 }
-                Text(row.text)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .lineLimit(1)
-                    .layoutPriority(2)
-                Text(row.detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                if let r = row.remindAt {
-                    metaChip(DateMention.format(r), row.overdue ? Theme.danger : Theme.warning)
-                }
                 if row.totalAll > 1 {
-                    HStack(spacing: 3) {
-                        PixelBar(filled: row.doneSteps, total: row.totalAll, color: hue)
+                    PixelBar(filled: row.doneSteps, total: row.totalAll, color: hue)
+                }
+            }
+            .frame(width: 16)
+            .padding(.top, 1)
+            // 内容列
+            VStack(alignment: .leading, spacing: 2.5) {
+                HStack(spacing: 8) {
+                    Text(row.text)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if let r = row.remindAt {
+                        metaChip(DateMention.format(r), row.overdue ? Theme.danger : Theme.warning)
+                    }
+                    if row.totalAll > 1 {
                         Text("\(row.doneSteps)/\(row.totalAll)")
                             .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.45))
                     }
                 }
-            }
-            ForEach(Array(row.subSteps.enumerated()), id: \.offset) { idx, step in
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 7)).foregroundStyle(.white.opacity(0.25))
-                    Text("\(idx + 2). \(step.text)")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.white.opacity(0.38))
-                        .lineLimit(1)
-                    if let r = step.remindAt {
-                        Text(DateMention.format(r))
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(Theme.warning.opacity(0.6))
+                Text(row.detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(compact ? 1 : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(Array(row.subSteps.enumerated()), id: \.offset) { idx, step in
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 7)).foregroundStyle(.white.opacity(0.25))
+                        Text("\(idx + 2). \(step.text)")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.white.opacity(0.38))
+                            .lineLimit(1)
+                        if let r = step.remindAt {
+                            Text(DateMention.format(r))
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(Theme.warning.opacity(0.6))
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
                 }
-                .padding(.leading, 31)
             }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.white.opacity(0.06)))
     }
 
     /// 彩色小方标签(参考图右侧的 tag chips)
@@ -1318,7 +1404,7 @@ struct IslandView: View {
                                                      Color(red: 0.55, green: 0.35, blue: 0.95)],
                                             startPoint: .leading, endPoint: .trailing))
         )
-        .transition(.scale(scale: 0.9, anchor: .top).combined(with: .opacity).animation(IslandController.morph))
+        .transition(islandModeTransition)
     }
 
     private func collectFileURLs(from providers: [NSItemProvider], done: @escaping ([URL]) -> Void) {

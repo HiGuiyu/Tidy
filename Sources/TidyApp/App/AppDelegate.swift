@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotKeys()
         setupFocusTicker()
         runSelfCheck()
+        FocusManager.shared.checkRecovery()   // 上次聚焦未正常结束 → 询问
         OnboardingController.shared.showIfFirstLaunch()
     }
 
@@ -162,33 +163,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard stored else { return }
                     // 两分钟即办进行中:这条不进后续流程,不弹草稿卡(草稿留库备用)
                     guard !TwoMinuteTimer.shared.isRunning(for: itemId) else { return }
-                    // 岛事件:AI 草稿就绪,一键采纳。项目在前,内容在后
+                    // 岛事件:AI 草稿就绪。低置信时不给"采纳",只呈现那一个关键问题
                     let projLeaf = draft.projectPath.components(separatedBy: "/").last
-                    let draftTitle: String
-                    if draft.isActionable && !draft.nextAction.isEmpty {
-                        draftTitle = projLeaf.map { "「\($0)」\(draft.nextAction.prefix(22))" }
-                            ?? "AI 已理清 → \(draft.nextAction.prefix(24))"
-                    } else {
-                        draftTitle = "AI 已理清:想法,建议\(draft.list == "someday" ? "搁置孵化" : "归档")"
+                    let lookAction = IslandEvent.Action(label: draft.isLowConfidence ? "回答并理清" : "细看",
+                                                        prominent: draft.isLowConfidence) {
+                        if let it = try? AppDatabase.shared.dbQueue.read({ d in
+                            try Item.fetchOne(d, sql: "SELECT * FROM item WHERE id = ?", arguments: [itemId])
+                        }) ?? nil {
+                            ClarifyController.shared.present(single: it)
+                        }
                     }
-                    IslandController.shared.present(event: IslandEvent(
-                        icon: "sparkles", color: Theme.violet,
-                        title: draftTitle,
-                        subtitle: captured.title,
-                        actions: [
-                            IslandEvent.Action(label: "采纳", prominent: true) {
-                                ClarifyController.adopt(itemId: itemId, draft: draft)
-                                IslandController.shared.refresh()
-                            },
-                            IslandEvent.Action(label: "细看") {
-                                if let it = try? AppDatabase.shared.dbQueue.read({ d in
-                                    try Item.fetchOne(d, sql: "SELECT * FROM item WHERE id = ?", arguments: [itemId])
-                                }) ?? nil {
-                                    ClarifyController.shared.present(single: it)
-                                }
-                            },
-                        ],
-                        duration: 10, kind: "draft"))
+                    if draft.isLowConfidence {
+                        IslandController.shared.present(event: IslandEvent(
+                            icon: "questionmark.circle.fill", color: Theme.violet,
+                            title: draft.question?.isEmpty == false
+                                ? "AI 想确认:\(draft.question!.prefix(30))"
+                                : "AI 拿不准这条怎么分流",
+                            subtitle: captured.title,
+                            actions: [lookAction],
+                            duration: 10, kind: "draft"))
+                    } else {
+                        let draftTitle: String
+                        if draft.isActionable && !draft.nextAction.isEmpty {
+                            draftTitle = projLeaf.map { "「\($0)」\(draft.nextAction.prefix(22))" }
+                                ?? "AI 已理清 → \(draft.nextAction.prefix(24))"
+                        } else {
+                            draftTitle = "AI 已理清:想法,建议\(draft.list == "someday" ? "搁置孵化" : "归档")"
+                        }
+                        IslandController.shared.present(event: IslandEvent(
+                            icon: "sparkles", color: Theme.violet,
+                            title: draftTitle,
+                            subtitle: captured.title,
+                            actions: [
+                                IslandEvent.Action(label: "采纳", prominent: true) {
+                                    ClarifyController.adopt(itemId: itemId, draft: draft)
+                                    IslandController.shared.refresh()
+                                },
+                                lookAction,
+                            ],
+                            duration: 10, kind: "draft"))
+                    }
                 }
             }
             // GTD 两分钟规则:点「马上做」即开 2:00 倒计时,岛上像素闪动陪跑

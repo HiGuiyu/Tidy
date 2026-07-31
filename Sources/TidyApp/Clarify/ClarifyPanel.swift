@@ -121,7 +121,8 @@ final class ClarifyController {
         hosting = h
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let panel = self.panel, panel.isKeyWindow else { return event }
+            guard let self, let panel = self.panel, panel.isKeyWindow,
+                  !panel.imeComposing else { return event }
             let cmd = event.modifierFlags.contains(.command)
             switch event.keyCode {
             case 53: self.finish(cleared: false); return nil        // esc
@@ -265,6 +266,7 @@ final class ClarifyModel: ObservableObject {
     @Published var twoMinHint = false
     @Published var aiLoading = false
     @Published var aiReason: String? = nil
+    @Published var aiQuestion: String? = nil   // 低置信时 AI 只问的那一个问题
 
     enum IdeaDest { case someday, resource }
     @Published var ideaDestination: IdeaDest = .someday
@@ -296,6 +298,7 @@ final class ClarifyModel: ObservableObject {
             remindAt = f.date(from: d.remindDate)
         }
         aiReason = d.reason
+        aiQuestion = d.isLowConfidence && (d.question?.isEmpty == false) ? d.question : nil
         aiFilled = true
         DispatchQueue.main.async { self.filling = false }
     }
@@ -327,6 +330,7 @@ struct ClarifyView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             originalText
+            if let q = model.aiQuestion { questionBanner(q) }
             if model.twoMinHint { twoMinBanner }
             Divider()
             form
@@ -373,6 +377,20 @@ struct ClarifyView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.07)))
+    }
+
+    /// 低置信横幅:AI 不确定时只问一个最关键的问题,而不是让用户核对整张表单
+    private func questionBanner(_ q: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "questionmark.circle.fill").foregroundStyle(Theme.violet)
+            Text("AI 想确认:\(q)")
+                .font(Theme.fontSub).foregroundStyle(Theme.violet)
+            Spacer()
+            Text("答案改到下面表单里即可").font(Theme.fontMicro).foregroundStyle(.tertiary)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.violet.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.violet.opacity(0.3), lineWidth: 1))
     }
 
     /// GTD 两分钟规则横幅(AI 判断 2 分钟内可解决时醒目提示)

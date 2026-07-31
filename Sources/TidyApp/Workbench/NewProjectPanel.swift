@@ -44,7 +44,8 @@ final class NewProjectController {
         panel = p
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let panel = self.panel, panel.isKeyWindow else { return event }
+            guard let self, let panel = self.panel, panel.isKeyWindow,
+                  !panel.imeComposing else { return event }
             switch event.keyCode {
             case 53: self.close(); return nil
             case 36, 76: self.confirm(); return nil

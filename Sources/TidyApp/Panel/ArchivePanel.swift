@@ -6,6 +6,14 @@ final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+extension NSWindow {
+    /// 输入法处于组合态(拼音尚未上屏):此时回车=确认候选、数字=选字、方向键=翻页,
+    /// 全部属于输入法,任何键盘监听都必须放行,否则会误触发面板操作
+    var imeComposing: Bool {
+        (firstResponder as? NSTextInputClient)?.hasMarkedText() ?? false
+    }
+}
+
 /// 面板中的一行(建议 / 搜索结果 / 新建 / 收件箱)
 struct PanelRow: Identifiable {
     enum Kind {
@@ -205,7 +213,8 @@ final class ArchivePanelController {
         panel = p
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let panel = self.panel, panel.isKeyWindow else { return event }
+            guard let self, let panel = self.panel, panel.isKeyWindow,
+                  !panel.imeComposing else { return event }
             return self.handleKey(event) ? nil : event
         }
     }

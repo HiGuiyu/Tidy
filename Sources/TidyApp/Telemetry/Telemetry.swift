@@ -39,6 +39,7 @@ enum Telemetry {
         var done7 = 0           // 近 7 天完成
         // 清单存量
         var inboxNow = 0, actionNow = 0, waitingNow = 0, somedayNow = 0
+        var oldestInboxDays: Int? = nil   // 收件箱最老条目年龄——比 Inbox Zero 更诚实的健康指标
         // 归档
         var archiveTotal = 0, rank1 = 0, ranked = 0, fallbackCount = 0
         var avgLatency = 0, cloudPct = 0
@@ -70,6 +71,9 @@ enum Telemetry {
             a.actionNow = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE status = 'clarified' AND gtdList = 'action'") ?? 0
             a.waitingNow = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE status = 'clarified' AND gtdList = 'waiting'") ?? 0
             a.somedayNow = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM item WHERE status = 'clarified' AND gtdList = 'someday'") ?? 0
+            if let oldest = try Date.fetchOne(db, sql: "SELECT MIN(createdAt) FROM item WHERE type IN ('idea','link') AND status = 'inbox'") {
+                a.oldestInboxDays = Calendar.current.dateComponents([.day], from: oldest, to: Date()).day
+            }
             // 归档
             a.archiveTotal = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM telemetry WHERE event IN ('confirm','correct')") ?? 0
             a.rank1 = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM telemetry WHERE event IN ('confirm','correct') AND chosenRank = 1") ?? 0

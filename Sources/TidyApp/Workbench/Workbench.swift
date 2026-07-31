@@ -93,7 +93,8 @@ final class WorkbenchController {
         panel = p
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let panel = self.panel, panel.isKeyWindow, let m = self.model else { return event }
+            guard let self, let panel = self.panel, panel.isKeyWindow,
+                  !panel.imeComposing, let m = self.model else { return event }
             let cmd = event.modifierFlags.contains(.command)
             // ⌘1-7 切标签页
             if cmd, let ch = event.charactersIgnoringModifiers, let n = Int(ch),
@@ -164,9 +165,13 @@ final class WorkbenchModel: ObservableObject {
         let draft: OpenAIClient.ClarifyDraft?
         var id: Int64 { item.id ?? 0 }
 
+        /// 低置信草稿不允许一键采纳,引导细看回答关键问题
+        var adoptable: Bool { draft.map { !$0.isLowConfidence } ?? false }
+
         /// 草稿一行摘要:「行动:催张三 · 客户A支付网关 · 重要」
         var draftSummary: String? {
             guard let d = draft else { return nil }
+            if d.isLowConfidence, let q = d.question, !q.isEmpty { return "AI 想确认:\(q)" }
             if !d.isActionable { return "想法 → 搁置孵化" }
             var parts: [String] = []
             let listName = GTDList(rawValue: d.list)?.name ?? "行动"
@@ -285,14 +290,17 @@ final class WorkbenchModel: ObservableObject {
         ClarifyController.adopt(itemId: id, draft: d)
     }
 
-    /// 一键采纳全部草稿
+    /// 一键采纳全部草稿(低置信的留下,引导逐条回答关键问题)
     func adoptAll() {
-        let ready = inboxEntries.filter { $0.draft != nil }
+        let ready = inboxEntries.filter { $0.adoptable }
         guard !ready.isEmpty else { return }
+        let skipped = inboxEntries.filter { $0.draft != nil && !$0.adoptable }.count
         for e in ready { adopt(e) }
         MemoryStore.shared.recordEpisodic("\(Archiver.dateStr()) 一键采纳 \(ready.count) 条 AI 理清草稿")
         reload()
-        ToastManager.shared.show("✓ 已采纳 \(ready.count) 条草稿,行动已就位——收件箱清爽了", duration: 3.5)
+        var msg = "✓ 已采纳 \(ready.count) 条草稿"
+        if skipped > 0 { msg += ",\(skipped) 条 AI 拿不准,留给你细看" }
+        ToastManager.shared.show(msg, duration: 3.5)
     }
 
     /// 项目完结流转(PARA):status=done + 目录移入 4-Archive/YYYY-Qn/
@@ -823,7 +831,7 @@ struct WorkbenchView: View {
                 }
                 .frame(maxHeight: 470)
                 HStack {
-                    let draftCount = model.inboxEntries.filter { $0.draft != nil }.count
+                    let draftCount = model.inboxEntries.filter { $0.adoptable }.count
                     if draftCount > 0 {
                         Button {
                             model.adoptAll()
@@ -860,7 +868,7 @@ struct WorkbenchView: View {
             }
             Spacer()
             if let r = item.remindAt { TagChip(text: "⏰ \(DateMention.format(r))", color: Theme.warning) }
-            if entry.draft != nil {
+            if entry.adoptable {
                 Button {
                     model.adopt(entry)
                     model.reload()
@@ -1031,9 +1039,11 @@ struct WorkbenchView: View {
                 }
                 // 清单存量
                 VStack(alignment: .leading, spacing: 6) {
-                    sectionHeader("tray.2.fill", "清单存量(越少越健康)", Theme.teal)
+                    sectionHeader("tray.2.fill", "清单存量(看最老条目年龄,不苛求清零)", Theme.teal)
                     HStack(spacing: 8) {
-                        statCard("\(a.inboxNow)", "收件箱", a.inboxNow > 5 ? Theme.danger : Theme.warning, sub: nil)
+                        statCard("\(a.inboxNow)", "收件箱",
+                                 (a.oldestInboxDays ?? 0) >= 7 ? Theme.danger : Theme.warning,
+                                 sub: a.oldestInboxDays.map { "最老 \($0) 天" })
                         statCard("\(a.actionNow)", "行动", Theme.accent, sub: nil)
                         statCard("\(a.waitingNow)", "等待", Theme.teal, sub: nil)
                         statCard("\(a.somedayNow)", "搁置", .gray, sub: nil)
@@ -1049,7 +1059,7 @@ struct WorkbenchView: View {
                         statCard("\(a.fallbackCount)", "搜索兜底", Theme.warning, sub: "AI 没猜中的次数")
                         statCard("\(a.cloudPct)%", "云端调用", Theme.teal, sub: "应随使用下降")
                     }
-                    Text("top-3 命中 \(a.ranked) 次 · 记忆 \(a.memoryCount) 条(越用越准)")
+                    Text("top-3 命中 \(a.ranked) 次 · 记忆 \(a.memoryCount) 条(越用越准) · 完成总数只作诊断,系统健康看「最老条目年龄」与回顾节奏")
                         .font(Theme.fontMicro).foregroundStyle(.tertiary)
                 }
                 HStack {

@@ -189,6 +189,12 @@ final class OpenAIClient {
         let remindDate: String       // "yyyy-MM-dd HH:mm" 或空串
         let twoMinutes: Bool         // 2 分钟内能解决?
         let reason: String
+        // 可信交互:低置信时只问一个最能改变分流的问题(旧草稿无此字段,置 nil)
+        let confidence: Double?
+        let question: String?
+
+        var conf: Double { confidence ?? 1.0 }
+        var isLowConfidence: Bool { conf < 0.6 }
     }
 
     func clarify(text: String, projectPaths: [String], activeProjectPath: String?) async throws -> ClarifyDraft {
@@ -215,9 +221,12 @@ final class OpenAIClient {
                 "remindDate": ["type": "string"],
                 "twoMinutes": ["type": "boolean"],
                 "reason": ["type": "string"],
+                "confidence": ["type": "number"],
+                "question": ["type": "string"],
             ],
             "required": ["isActionable", "nextAction", "expectedOutcome", "list", "waitingFor",
-                         "projectPath", "important", "urgent", "remindDate", "twoMinutes", "reason"],
+                         "projectPath", "important", "urgent", "remindDate", "twoMinutes", "reason",
+                         "confidence", "question"],
             "additionalProperties": false,
         ]
         return try await structured(ClarifyDraft.self, system:
@@ -229,6 +238,8 @@ final class OpenAIClient {
             "important=对长期目标有影响;urgent=有时间压力。" +
             "文本里提到具体时间(如「周五下午3点」)则换算为 remindDate(格式 yyyy-MM-dd HH:mm,基于现在时间推算),没提到则空串。" +
             "twoMinutes:这件事 2 分钟内能否解决(GTD 两分钟规则,能解决就该立即做)。" +
+            "confidence:0~1,你对这份分流草稿整体的把握。把握不足(<0.6)时,在 question 里用一句话问出" +
+            "最能改变分流结果的那一个问题(例如「这是要自己写还是等设计稿?」);把握足够则 question 返回空串。" +
             "全部中文字段用简体中文,不可执行时 nextAction/expectedOutcome 返回空串。",
             user: lines.joined(separator: "\n\n"),
             schemaName: "clarify_draft", schema: schema)

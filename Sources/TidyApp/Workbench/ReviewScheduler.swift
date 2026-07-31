@@ -44,6 +44,7 @@ final class ReviewScheduler {
     private func fireStretchReminder() {
         guard stretchOn, Date().timeIntervalSince(lastStretch) >= 50 * 60 else { return }
         lastStretch = Date()
+        guard AttentionGovernor.shouldFire("stretch") else { return }
         Telemetry.record(event: "stretch_fired")
         if IslandController.shared.isVisible {
             IslandController.shared.present(event: IslandEvent(
@@ -58,7 +59,7 @@ final class ReviewScheduler {
                         self?.lastStretch = Date().addingTimeInterval(-40 * 60)
                     },
                 ],
-                duration: 20, kind: "stretch"))
+                duration: 20, kind: "stretch", silent: true))
         } else {
             ToastManager.shared.showLegacy("🧘 坐了 50 分钟了,站起来活动两分钟", duration: 10)
         }
@@ -73,15 +74,23 @@ final class ReviewScheduler {
         guard !defaults.bool(forKey: key) else { return }
         let stale = AppDatabase.shared.staleWaiting(days: 3)
         defaults.set(true, forKey: key)
-        guard let first = stale.first else { return }
+        guard let first = stale.first, AttentionGovernor.shouldFire("waiting") else { return }
         let days = Calendar.current.dateComponents([.day], from: first.updatedAt, to: now).day ?? 0
         let who = first.waitingFor.map { "(\($0))" } ?? ""
         Telemetry.record(event: "waiting_nudge", itemId: first.id)
-        ToastManager.shared.show(
-            "⏳ 「\((first.nextAction ?? first.title).prefix(18))」\(who)已等 \(days) 天" +
-            (stale.count > 1 ? ",另有 \(stale.count - 1) 条也搁着" : "") + "——要催一催吗?",
-            actionTitle: "查看等待", duration: 12) {
-            WorkbenchController.shared.present(tab: .waiting)
+        if IslandController.shared.isVisible {
+            IslandController.shared.present(event: IslandEvent(
+                icon: "hourglass", color: Theme.teal,
+                title: "「\((first.nextAction ?? first.title).prefix(20))」\(who)已等 \(days) 天",
+                subtitle: stale.count > 1 ? "另有 \(stale.count - 1) 条也在等——要跟进一下吗?" : "要跟进一下吗?",
+                actions: [
+                    IslandEvent.Action(label: "查看等待", prominent: true) {
+                        WorkbenchController.shared.present(tab: .waiting)
+                    },
+                ],
+                duration: 12, kind: "waiting", silent: true))
+        } else {
+            ToastManager.shared.showLegacy("⏳ 「\((first.nextAction ?? first.title).prefix(18))」已等 \(days) 天", duration: 10)
         }
     }
 
@@ -145,16 +154,23 @@ final class ReviewScheduler {
         if slot == "am", inboxCount > 0 {
             parts.append("收件箱 \(inboxCount) 条待理清")
         }
-        guard !parts.isEmpty else { return }
+        guard !parts.isEmpty, AttentionGovernor.shouldFire("brief") else { return }
         Telemetry.record(event: "brief_shown", chosenPath: slot)
-        ToastManager.shared.show("📋 " + parts.joined(separator: " · "),
-                                 actionTitle: inboxCount > 0 && slot == "am" ? "开始理清" : "打开工作台",
-                                 duration: 10) {
-            if inboxCount > 0 && slot == "am" {
-                ClarifyController.shared.startQueue()
-            } else {
-                WorkbenchController.shared.present()
-            }
+        let clarifyFirst = inboxCount > 0 && slot == "am"
+        if IslandController.shared.isVisible {
+            IslandController.shared.present(event: IslandEvent(
+                icon: "sun.horizon.fill", color: Theme.accent,
+                title: parts.joined(separator: " · "),
+                subtitle: slot == "am" ? "上午简报" : "下午简报",
+                actions: [
+                    IslandEvent.Action(label: clarifyFirst ? "开始理清" : "打开工作台", prominent: true) {
+                        if clarifyFirst { ClarifyController.shared.startQueue() }
+                        else { WorkbenchController.shared.present() }
+                    },
+                ],
+                duration: 12, kind: "brief", silent: true))
+        } else {
+            ToastManager.shared.showLegacy("📋 " + parts.joined(separator: " · "), duration: 10)
         }
     }
 
@@ -169,11 +185,21 @@ final class ReviewScheduler {
         guard !defaults.bool(forKey: key) else { return }
         let count = AppDatabase.shared.items(inList: "someday").count
         defaults.set(true, forKey: key)
-        guard count > 0 else { return }
+        guard count > 0, AttentionGovernor.shouldFire("someday") else { return }
         Telemetry.record(event: "someday_review_prompt")
-        ToastManager.shared.show("🌙 搁置清单有 \(count) 条,花 2 分钟扫一眼:该激活就激活,该删就删",
-                                 actionTitle: "查看", duration: 12) {
-            WorkbenchController.shared.present(tab: .someday)
+        if IslandController.shared.isVisible {
+            IslandController.shared.present(event: IslandEvent(
+                icon: "moon.zzz.fill", color: Theme.teal,
+                title: "搁置清单有 \(count) 条",
+                subtitle: "花 2 分钟扫一眼:该激活就激活,该放下就放下",
+                actions: [
+                    IslandEvent.Action(label: "查看", prominent: true) {
+                        WorkbenchController.shared.present(tab: .someday)
+                    },
+                ],
+                duration: 12, kind: "someday", silent: true))
+        } else {
+            ToastManager.shared.showLegacy("🌙 搁置清单有 \(count) 条,花 2 分钟扫一眼", duration: 12)
         }
     }
 
@@ -335,7 +361,7 @@ private struct ReviewView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("建议").font(Theme.fontSub).foregroundStyle(.secondary)
                 if stats.inbox > 0 {
-                    suggestion("收件箱积压 \(stats.inbox) 条 → 现在清掉", "开始理清", onClarify)
+                    suggestion("收件箱还有 \(stats.inbox) 条想法在等你 → 顺手理一理", "开始理清", onClarify)
                 }
                 if stats.someday > 0 {
                     suggestion("搁置清单 \(stats.someday) 条 → 扫一眼,激活或删除", "查看搁置", onOpenSomeday)

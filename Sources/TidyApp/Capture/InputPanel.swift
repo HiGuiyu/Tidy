@@ -56,7 +56,8 @@ final class InputPanelController {
         panel = p
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let panel = self.panel, panel.isKeyWindow else { return event }
+            guard let self, let panel = self.panel, panel.isKeyWindow,
+                  !panel.imeComposing else { return event }
             if event.keyCode == 53 { self.cancel(); return nil }  // esc
             return event
         }
